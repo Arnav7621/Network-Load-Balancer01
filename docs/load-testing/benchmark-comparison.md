@@ -14,25 +14,29 @@
 
 ## Results
 
+All figures below are calculated from the raw Locust files in `benchmark-runs/*_stats.csv` (the `Aggregated` row) by `generate_graphs.py`, so the table, the graphs and the raw data agree. Throughput is in requests per second, times are in milliseconds, and averages are shown to one decimal place.
+
 | Metric | Round Robin | Weighted Round Robin | Least Connections |
 |---|---:|---:|---:|
-| Total requests | 86,266 | 86,835 | 85,234 |
+| Total requests | 85,234 | 85,756 | 84,356 |
 | Failed requests | 0 | 0 | 0 |
-| Failure rate | 0% | 0% | 0% |
-| Average response time | 11 ms | 11 ms | 11 ms |
+| Failure rate | 0.0% | 0.0% | 0.0% |
+| Average response time | 11.9 ms | 11.7 ms | 11.9 ms |
 | Median response time | 10 ms | 10 ms | 11 ms |
 | P95 response time | 15 ms | 15 ms | 15 ms |
-| P99 response time | 21 ms | 21 ms | 21 ms |
-| Maximum response time | 3,200 ms | 1,015 ms | 3,011 ms |
-| Throughput | 1,440.36 req/s | 1,450.02 req/s | 1,423.23 req/s |
+| P99 response time | 21 ms | 21 ms | 20 ms |
+| Maximum response time | 3,212 ms | 1,015 ms | 3,011 ms |
+| Throughput | 1,440.7 req/s | 1,450.8 req/s | 1,425.0 req/s |
+
+To regenerate the graphs and print this table again, run `python3 docs/load-testing/generate_graphs.py` (requires `matplotlib` and `numpy`).
 
 ## Observations
 
 1. All three algorithms completed their benchmark runs with zero failed requests.
-2. Weighted Round Robin recorded the highest throughput in these individual runs, at approximately 1,450 requests per second.
-3. Average response times were approximately 11 ms for all three algorithms.
-4. All three recorded a P95 of 15 ms and a P99 of 21 ms.
-5. Maximum response times varied across runs, indicating occasional latency spikes.
+2. Weighted Round Robin recorded the highest throughput in these individual runs, at approximately 1,451 requests per second. That is about 0.7% above Round Robin and about 1.8% above Least Connections.
+3. Average response times were between 11.7 ms and 11.9 ms for all three algorithms.
+4. All three recorded a P95 of 15 ms. P99 was 21 ms for Round Robin and Weighted Round Robin, and 20 ms for Least Connections.
+5. Maximum response times were far higher than the P99 values (3,212 ms, 1,015 ms and 3,011 ms), and the 99.9th percentile reported by Locust was about 1,000 ms in all three runs. This indicates that roughly one request in a thousand was very slow, so occasional latency spikes occurred in each run.
 
 ## Conclusion
 

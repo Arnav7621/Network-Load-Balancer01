@@ -20,3 +20,6 @@ __pycache__/
 
 # Testing
 .pytest_cache/
+
+# Local Python virtual environment
+.venv/
