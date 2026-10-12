@@ -345,13 +345,17 @@ algorithm, against identical backends, on one computer.
 
 ## Wireshark evidence
 
-Packet captures and a screenshot are in [docs/wireshark/](docs/wireshark/).
-The existing captures show the reverse-proxy behaviour but every client
-request in them went to Backend-9001, so they do not show distribution.
-[docs/wireshark/README.md](docs/wireshark/README.md) explains this, gives a
-repeatable procedure for capturing distribution across all three backends,
-failover and recovery, and lists the Wireshark filters and the numbers to
-expect.
+Five packet captures in `docs/wireshark/` demonstrate request distribution, failover, and recovery:
+
+| Capture | Scenario | Expected result |
+|---|---|---|
+| `round-robin-distribution.pcapng` | 30 requests using Round Robin | 10 requests per backend |
+| `weighted-distribution.pcapng` | 30 requests using Weighted Round Robin | 15, 10, and 5 requests across backends 9001, 9002, and 9003 |
+| `least-connections-concurrent.pcapng` | 18 concurrent requests using Least Connections | 6 requests per backend in the recorded test |
+| `failover-backend-9002-down.pcapng` | Backend 9002 stopped | Requests continue through backends 9001 and 9003 |
+| `recovery-backend-9002.pcapng` | Backend 9002 restored | All three backends receive requests again |
+
+See [`docs/wireshark/README.md`](docs/wireshark/README.md) for capture procedures, filters, and further details. Captures were collected using the non-Docker setup because Docker Desktop's internal network traffic may not be directly visible to Wireshark on the host.
 
 ## Project layout
 
@@ -375,46 +379,22 @@ requirements-dev.txt   All Python packages used by the project
 
 ## Known limitations
 
-- **Only GET is proxied.** `HEAD` and other methods get a 501, and a `POST` to
-  any path other than `/algorithm` gets a 404. Request headers and bodies are
-  not forwarded to the backends.
-- **No authentication.** Anyone who can reach port 8080 or the dashboard can
-  change the routing algorithm. By default the load balancer listens on all
-  network interfaces. This is acceptable for a lab, not for deployment.
-- **Single load balancer.** If it stops, everything stops. State (statistics,
-  circuit state) is in memory and resets on restart.
-- **Events are built in the browser.** The dashboard notices changes by
-  comparing successive polls (every 2 seconds), so the event list is empty
-  after a page refresh and a change shorter than one poll is not seen. The
-  "LIVE" label is a status indicator; there is no pause button.
-- **Exactly three backends on fixed ports.** The weights, ports and breaker
-  settings are fixed in the source, and the dashboard's topology and charts
-  show ports 9001 to 9003.
-- **Least Connections ties go to the first backend**, and Weighted Round
-  Robin sends its share in bursts (3, then 2, then 1).
-- **A hung backend is slow to detect** (one read timeout per request until the
-  circuit opens), see [How it works](#how-it-works).
-- **The circuit state changes lazily.** An OPEN circuit whose cooldown has
-  ended is still reported as OPEN (with 0 seconds left) until the next request
-  arrives.
-- **Statistics counters are not locked.** Concurrent updates could in theory
-  lose a count; none was observed in the tests, which compare client-visible
-  results with the recorded statistics.
-- **Development servers.** The backends and the dashboard run on Flask's
-  built-in server, which is not a production server.
-- **Benchmark scope.** One run per algorithm with 20 users, identical
-  backends and a trivial `GET /`, all on one computer, with the backends run
-  by Docker Compose. It cannot rank the algorithms. `locust-results.txt` is an
-  earlier, shorter test that is kept only for the record.
-- **Captures and Docker.** Docker Desktop's internal network is not visible to
-  Wireshark on the host, so packet-capture sessions use the non-Docker setup.
-- **The dashboard container** was added to Docker Compose after the rest of
-  the stack was tested in Docker; run `docker compose up --build` and check
-  `docker compose ps` on your own computer.
-- **Python versions.** The automated tests were last run on Python 3.12, not
-  on the 3.9.6 the project was developed with. The code uses only syntax that
-  is valid on 3.9, but run the tests on your own environment before
-  submitting.
+| Sr. No. | Limitation | Description |
+|---:|---|---|
+| 1 | HTTP methods | Only GET requests are proxied. Other HTTP methods are not supported, except the dedicated algorithm configuration endpoint. |
+| 2 | Authentication | Authentication is not implemented. Anyone with access to the load balancer or dashboard may be able to change the routing algorithm. |
+| 3 | Single load balancer | If the load balancer stops, request routing becomes unavailable. Statistics and circuit-breaker state are stored in memory and reset on restart. |
+| 4 | Dashboard events | Events are detected by comparing successive polls. The event list is not persistent and resets when the page is refreshed. |
+| 5 | Fixed backend configuration | The system uses three backends on ports 9001, 9002, and 9003. Ports, weights, and circuit-breaker settings are defined in the source code. |
+| 6 | Routing behaviour | Least Connections resolves ties by selecting the first eligible backend. Weighted Round Robin follows the configured backend weights. |
+| 7 | Slow backend detection | A backend that accepts connections but does not respond may take time to be excluded from routing because of request timeouts and circuit-breaker thresholds. |
+| 8 | In-memory statistics | Statistics and circuit-breaker state are not persisted, so historical state is lost when the application restarts. |
+| 9 | Development servers | The backend servers and dashboard use Flask's built-in development server, which is not intended for production deployment. |
+| 10 | Benchmark scope | The recorded benchmark uses one run per algorithm on a single computer with identical backends. Results are workload-dependent and do not establish a universal ranking. |
+| 11 | Python compatibility | Verify the automated tests on the Python version used for submission and deployment. |
+| 12 | Deployment and security | Production use would require additional security, monitoring, and availability measures. |
+
+
 
 ## Troubleshooting
 
