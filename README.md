@@ -435,11 +435,12 @@ Institution: Department of Computer Science and Engineering, MIT World Peace Uni
 Course: Computer Networks Laboratory (CSE20110)
 Academic Year: 2026–2027
 
-Sr. No.	PRN	Student Name
-1	1262241524	Nayna Sharma
-2	1262241534	Harshad Pardhi
-3	1262241729	Aaryan Kumbhare
-4	1262241775	Anurag Harapanahalli
+| Sr. No. | PRN | Student Name |
+|---:|---|---|
+| 1 | 1262241524 | Nayna Sharma |
+| 2 | 1262241534 | Harshad Pardhi |
+| 3 | 1262241729 | Aaryan Kumbhare |
+| 4 | 1262241775 | Anurag Harapanahalli |
 
 
 ## More documentation
