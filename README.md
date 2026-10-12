@@ -442,9 +442,3 @@ Academic Year: 2026–2027
 | 3 | 1262241729 | Aaryan Kumbhare |
 | 4 | 1262241775 | Anurag Harapanahalli |
 
-
-## More documentation
-
-- [docs/architecture-and-testing.md](docs/architecture-and-testing.md): design, failure handling, test strategy and results
-- [docs/load-testing/README.md](docs/load-testing/README.md): benchmark files and method
-- [docs/wireshark/README.md](docs/wireshark/README.md): packet-capture evidence and procedure
