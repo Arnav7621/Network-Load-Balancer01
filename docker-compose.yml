@@ -85,3 +85,29 @@ services:
       retries: 3
       start_period: 5s
 
+  dashboard:
+    build: ./dashboard
+    container_name: vantora-dashboard
+    ports:
+      - "5050:5050"
+    environment:
+      # Inside a container, reach the load balancer by its service name.
+      # (127.0.0.1 here would be the dashboard container itself.)
+      LB_URL: "http://load-balancer:8080"
+      DASHBOARD_HOST: "0.0.0.0"
+      PYTHONUNBUFFERED: "1"
+    depends_on:
+      load-balancer:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5050/healthz', timeout=2)"
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s

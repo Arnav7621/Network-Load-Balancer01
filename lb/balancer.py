@@ -2,6 +2,7 @@
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import http.client
+import socket
 import threading
 import time
 import json
@@ -21,6 +22,87 @@ from algorithms import (
 
 LB_HOST = "0.0.0.0"
 LB_PORT = 8080
+
+
+# ==================================================
+# Timeouts and retry policy
+# ==================================================
+#
+# CONNECT_TIMEOUT   How long to wait for a TCP connection to a backend.
+#                   Short, so an unreachable backend fails over quickly.
+# READ_TIMEOUT      How long to wait for the backend's response once the
+#                   request has been sent. Must be longer than the slowest
+#                   legitimate request (the backend's /slow endpoint
+#                   defaults to 5 seconds).
+# REQUEST_DEADLINE  Total time budget for one client request, across all
+#                   failover attempts.
+#
+# All three can be changed with environment variables (in seconds).
+
+def read_seconds(name, default):
+    """Read a positive number of seconds from an environment variable."""
+
+    raw = os.getenv(name)
+
+    if raw is None or raw.strip() == "":
+        return default
+
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ValueError(
+            f"{name} must be a number of seconds, got {raw!r}"
+        )
+
+    if value <= 0:
+        raise ValueError(f"{name} must be greater than 0")
+
+    return value
+
+
+DEFAULT_CONNECT_TIMEOUT = 1.0
+DEFAULT_READ_TIMEOUT = 10.0
+DEFAULT_REQUEST_DEADLINE = 20.0
+
+CONNECT_TIMEOUT = read_seconds(
+    "VANTORA_CONNECT_TIMEOUT", DEFAULT_CONNECT_TIMEOUT
+)
+READ_TIMEOUT = read_seconds(
+    "VANTORA_READ_TIMEOUT", DEFAULT_READ_TIMEOUT
+)
+REQUEST_DEADLINE = read_seconds(
+    "VANTORA_REQUEST_DEADLINE", DEFAULT_REQUEST_DEADLINE
+)
+
+# Do not start a new attempt with less time than this left in the budget.
+MIN_ATTEMPT_SECONDS = 0.05
+
+# Methods that may be repeated on another backend even if the first backend
+# might already have processed the request. (The load balancer currently
+# proxies GET only; the policy is written so that it stays correct if other
+# methods are added.)
+RETRY_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def is_retry_safe(method, request_sent):
+    """May a failed attempt be repeated on another backend?
+
+    * The request never reached the backend (connection refused, connect
+      timeout): nothing was processed, so retrying is always safe.
+    * The request was sent: the backend may have processed it, so it may
+      only be repeated if the method is safe to repeat.
+    """
+
+    return (not request_sent) or method.upper() in RETRY_SAFE_METHODS
+
+
+class BackendError(Exception):
+    """A failed attempt to get a response from one backend."""
+
+    def __init__(self, kind, request_sent, original):
+        super().__init__(str(original))
+        self.kind = kind                    # "timeout" or "unreachable"
+        self.request_sent = request_sent    # may the backend have seen it?
 
 
 # ==================================================
@@ -204,10 +286,30 @@ class LoadBalancerHandler(BaseHTTPRequestHandler):
             }, status=404)
             return
 
-        # Retry / failover
+        self.proxy_request("GET")
+
+    # ==================================================
+    # Reverse proxy with failover
+    # ==================================================
+
+    def proxy_request(self, method):
+        """Forward the request to a backend, failing over when needed.
+
+        Only the call to the backend is retried. As soon as a backend has
+        answered (even with a 5xx) its response is returned to the client
+        and the request is never repeated, and a failure while writing to
+        the client is never treated as a backend failure.
+        """
+
+        deadline = time.monotonic() + REQUEST_DEADLINE
         attempted_backends = []
+        last_failure = None
 
         for attempt in range(len(backends)):
+
+            if deadline - time.monotonic() < MIN_ATTEMPT_SECONDS:
+                last_failure = "timeout"
+                break
 
             with algorithm_lock:
                 selected_algorithm = algorithm
@@ -238,112 +340,153 @@ class LoadBalancerHandler(BaseHTTPRequestHandler):
                 )
                 continue
 
-            breaker_recorded = False
-            connection = None
-            start_time = time.time()
-            backend.active_conns += 1
+            result = self.call_backend(backend, method, deadline)
 
-            try:
-                connection = http.client.HTTPConnection(
-                    backend.host,
-                    backend.port,
-                    timeout=3
-                )
+            if isinstance(result, BackendError):
+                last_failure = result.kind
 
-                connection.request("GET", self.path)
-                response = connection.getresponse()
-                response_body = response.read()
-
-                # Record circuit-breaker outcome
-                if response.status >= 500:
-                    backend.errors += 1
-                    backend.breaker.record_failure()
-                else:
-                    backend.breaker.record_success()
-
-                breaker_recorded = True
-
-                # Statistics
-                elapsed = time.time() - start_time
-                backend.total_requests += 1
-                backend.total_response_time += elapsed
-                backend.avg_response_time = (
-                    backend.total_response_time
-                    / backend.total_requests
-                )
-
-                # Forward backend response headers
-                self.send_response(response.status)
-
-                for header, value in response.getheaders():
-                    if header.lower() not in (
-                        "connection",
-                        "transfer-encoding",
-                        "keep-alive",
-                        "proxy-authenticate",
-                        "proxy-authorization",
-                        "te",
-                        "trailers",
-                        "upgrade",
-                        "content-length"
-                    ):
-                        self.send_header(header, value)
-
-                self.send_header(
-                    "Content-Length",
-                    str(len(response_body))
-                )
-                self.send_header(
-                    "X-Served-By",
-                    f"Backend-{backend.port}"
-                )
-                self.send_header(
-                    "Access-Control-Allow-Origin",
-                    "*"
-                )
-                self.end_headers()
-
-                # Do not retry after starting the client response
-                try:
-                    self.wfile.write(response_body)
-                except (BrokenPipeError, ConnectionResetError, OSError) as error:
-                    print(
-                        f"Client response write failed after "
-                        f"Backend-{backend.port} responded: {error}"
-                    )
-
-                return
-
-            except Exception as error:
-                if not breaker_recorded:
-                    backend.breaker.record_failure()
-
-                backend.errors += 1
+                if not is_retry_safe(method, result.request_sent):
+                    self.send_json({
+                        "error": (
+                            "Backend failed after receiving the request. "
+                            "The request was not repeated because it may "
+                            "already have been processed"
+                        )
+                    }, status=502)
+                    return
 
                 print(
-                    f"Request failed on Backend-{backend.port}: {error}"
+                    f"Failover attempt "
+                    f"{attempt + 1}/{len(backends)}"
                 )
-                print(
-                    f"Failover attempt {attempt + 1}/{len(backends)}"
-                )
-
                 continue
 
-            finally:
-                backend.active_conns = max(
-                    0, backend.active_conns - 1
-                )
+            self.send_backend_response(backend, *result)
+            return
 
-                if connection is not None:
-                    try:
-                        connection.close()
-                    except Exception:
-                        pass
+        # No backend could answer
+        if last_failure == "timeout":
+            self.send_json({
+                "error": "Backend response timed out"
+            }, status=504)
+            return
 
-        # All backends failed
         self.send_json({
             "error": "All backend servers are unavailable"
         }, status=503)
+
+    def call_backend(self, backend, method, deadline):
+        """Ask one backend for the response.
+
+        Returns (status, headers, body) when the backend answered, or a
+        BackendError when it could not. Updates the backend's statistics
+        and circuit breaker.
+        """
+
+        connection = None
+        request_sent = False
+        start_time = time.time()
+        backend.active_conns += 1
+
+        try:
+            connection = http.client.HTTPConnection(
+                backend.host,
+                backend.port,
+                timeout=min(
+                    CONNECT_TIMEOUT,
+                    max(MIN_ATTEMPT_SECONDS, deadline - time.monotonic())
+                )
+            )
+            connection.connect()
+
+            # Connected: switch from the short connect timeout to the
+            # read timeout, limited by the remaining request budget.
+            connection.sock.settimeout(
+                max(
+                    MIN_ATTEMPT_SECONDS,
+                    min(READ_TIMEOUT, deadline - time.monotonic())
+                )
+            )
+
+            # From here on the backend may have processed the request.
+            request_sent = True
+            connection.request(method, self.path)
+
+            response = connection.getresponse()
+            response_body = response.read()
+
+        except Exception as error:
+            if isinstance(error, (socket.timeout, TimeoutError)):
+                kind = "timeout"
+            else:
+                kind = "unreachable"
+
+            backend.breaker.record_failure()
+            backend.errors += 1
+
+            print(
+                f"Request failed on Backend-{backend.port} "
+                f"({kind}): {error}"
+            )
+
+            return BackendError(kind, request_sent, error)
+
+        finally:
+            backend.active_conns = max(0, backend.active_conns - 1)
+
+            if connection is not None:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+
+        # The backend answered: record the outcome.
+        if response.status >= 500:
+            backend.errors += 1
+            backend.breaker.record_failure()
+        else:
+            backend.breaker.record_success()
+
+        elapsed = time.time() - start_time
+        backend.total_requests += 1
+        backend.total_response_time += elapsed
+        backend.avg_response_time = (
+            backend.total_response_time / backend.total_requests
+        )
+
+        return response.status, response.getheaders(), response_body
+
+    def send_backend_response(self, backend, status, headers, body):
+        """Return a backend's response to the client (never retried)."""
+
+        try:
+            self.send_response(status)
+
+            for header, value in headers:
+                if header.lower() not in (
+                    "connection",
+                    "transfer-encoding",
+                    "keep-alive",
+                    "proxy-authenticate",
+                    "proxy-authorization",
+                    "te",
+                    "trailers",
+                    "upgrade",
+                    "content-length"
+                ):
+                    self.send_header(header, value)
+
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-Served-By", f"Backend-{backend.port}")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(body)
+
+        except (BrokenPipeError, ConnectionResetError, OSError) as error:
+            print(
+                f"Client response write failed after "
+                f"Backend-{backend.port} responded: {error}"
+            )
 
     # ==================================================
     # POST Requests

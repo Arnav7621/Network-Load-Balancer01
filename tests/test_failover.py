@@ -1,247 +1,30 @@
 """Integration tests for Vantora's failover and circuit-breaker behaviour.
 
-These tests run the REAL load-balancer request handler (balancer.py) in front
-of small fake backend servers that listen on free ports chosen by the
-operating system. Real HTTP requests go through real sockets, so a test fails
-if the load balancer's retry, health-exclusion or circuit-breaker logic breaks.
+These tests run the REAL load-balancer request handler (lb/balancer.py) in
+front of small fake backend servers on free ports (see helpers.py), so real
+HTTP requests go through real sockets and a test fails if the load
+balancer's retry, health-exclusion or circuit-breaker logic breaks.
 
-Isolation:
-  * Every server uses port 0 (a free port), so nothing clashes with 9001-9003
-    or with a running Vantora instance.
-  * The module-level `backends` / `algorithm` of balancer.py are swapped for
-    the duration of each test and restored afterwards.
-  * All servers are stopped with addCleanup(), which runs even if an
-    assertion fails.
-  * The background health-check thread is NOT started. Health-check results
-    are fed in directly with backend.record_health_failure(), so the circuit
-    breaker and the health monitor stay clearly separate.
+Circuit-breaker cooldowns are driven by a fake clock, so no test waits for
+real time to pass. The background health-check thread is not started;
+health-check results are fed in directly.
 
-Not covered here: a backend that hangs (the load balancer waits 3 seconds per
-attempt, which would slow the suite) and the Docker network.
+Slow and hung backends are covered in test_slow_requests.py, and mixed
+workloads in test_mixed_workload.py.
 """
 
-import http.client
 import json
 import os
 import sys
-import threading
-import time
 import unittest
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from unittest import mock
 
-# Allow Python to import files from the lb folder
-sys.path.insert(
-    0,
-    os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "..", "lb")
-    )
-)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import algorithms
-import balancer
-from algorithms import Backend, RoundRobin
-from circuit_breaker import CLOSED, HALF_OPEN, OPEN, CircuitBreaker
-
-LOCALHOST = "127.0.0.1"
+from helpers import LoadBalancerTestCase
+from circuit_breaker import CLOSED, HALF_OPEN, OPEN
 
 
-class FakeBackend:
-    """A tiny real HTTP server that stands in for one Vantora backend."""
-
-    def __init__(self):
-        self.status = 200   # status returned for every path except /health
-        self.hits = 0       # requests received, not counting /health
-        self.port = None
-        self._server = None
-        self._thread = None
-        self._lock = threading.Lock()
-
-    def start(self, port=0):
-        owner = self
-
-        class Handler(BaseHTTPRequestHandler):
-            def do_GET(self):
-                if self.path == "/health":
-                    status = 200
-                else:
-                    status = owner.status
-                    with owner._lock:
-                        owner.hits += 1
-
-                body = json.dumps({"status": status}).encode()
-                self.send_response(status)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-
-            def log_message(self, *args):
-                pass
-
-        self._server = ThreadingHTTPServer((LOCALHOST, port), Handler)
-        self.port = self._server.server_address[1]
-
-        server = self._server
-        self._thread = threading.Thread(
-            target=lambda: server.serve_forever(poll_interval=0.01),
-            daemon=True
-        )
-        self._thread.start()
-
-    def stop(self):
-        """Stop listening, so new connections are refused. Safe to call twice."""
-        if self._server is None:
-            return
-
-        self._server.shutdown()
-        self._server.server_close()
-        self._thread.join(timeout=5)
-        self._server = None
-        self._thread = None
-
-
-class QuietHandler(balancer.LoadBalancerHandler):
-    """The real handler, with per-request logging switched off."""
-
-    def log_message(self, *args):
-        pass
-
-
-class FailoverIntegrationTests(unittest.TestCase):
-
-    def setUp(self):
-        # Three fake backends on free ports.
-        self.fakes = [FakeBackend() for _ in range(3)]
-
-        for fake in self.fakes:
-            fake.start()
-            self.addCleanup(fake.stop)
-
-        # Real Backend objects (real circuit breakers) pointing at them.
-        self.backends = [
-            Backend(LOCALHOST, fake.port) for fake in self.fakes
-        ]
-
-        # Point the real load-balancer code at these backends, using
-        # Round Robin so the order of selection is predictable.
-        self._patch(balancer, "backends", self.backends)
-        self._patch(balancer, "algorithm", RoundRobin())
-        self._patch(balancer, "algorithm_name", "Round Robin")
-
-        # Keep the test output readable: the load balancer prints a line for
-        # every failure and circuit change.
-        self._patch(balancer, "print", mock.MagicMock(), create=True)
-        self._patch(algorithms, "print", mock.MagicMock(), create=True)
-
-        # The real load balancer, listening on a free port.
-        self.lb_server = ThreadingHTTPServer(
-            (LOCALHOST, 0),
-            QuietHandler
-        )
-        self.lb_port = self.lb_server.server_address[1]
-
-        lb_thread = threading.Thread(
-            target=lambda: self.lb_server.serve_forever(poll_interval=0.01),
-            daemon=True
-        )
-        lb_thread.start()
-
-        def stop_lb():
-            self.lb_server.shutdown()
-            self.lb_server.server_close()
-            lb_thread.join(timeout=5)
-
-        self.addCleanup(stop_lb)
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    def _patch(self, target, attribute, value, **kwargs):
-        patcher = mock.patch.object(target, attribute, value, **kwargs)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
-    def name(self, index):
-        """The X-Served-By value for backend `index`."""
-        return f"Backend-{self.backends[index].port}"
-
-    def get(self, path="/"):
-        """Send one request through the load balancer: (status, served_by, body)."""
-        connection = http.client.HTTPConnection(
-            LOCALHOST, self.lb_port, timeout=10
-        )
-        try:
-            connection.request("GET", path)
-            response = connection.getresponse()
-            body = response.read()
-            return (
-                response.status,
-                response.getheader("X-Served-By"),
-                body
-            )
-        finally:
-            connection.close()
-
-    def get_many(self, count):
-        return [self.get() for _ in range(count)]
-
-    def state(self, index):
-        return self.backends[index].breaker.snapshot()["state"]
-
-    def use_fast_breaker(self, index, open_seconds=0.3):
-        """Give a backend the real CircuitBreaker with a short cooldown.
-
-        Returns the list in which every state change is recorded.
-        """
-        transitions = []
-
-        self.backends[index].breaker = CircuitBreaker(
-            name=f"test-{index}",
-            failure_threshold=3,
-            open_seconds=open_seconds,
-            half_open_max_probes=1,
-            success_threshold=1,
-            on_state_change=lambda name, old, new: transitions.append(
-                (old, new)
-            )
-        )
-
-        return transitions
-
-    def drive_until_open(self, index, max_requests=40):
-        """Send traffic until the circuit of backend `index` opens."""
-        for _ in range(max_requests):
-            if self.state(index) == OPEN:
-                return
-
-            self.get()
-
-        self.fail(f"Circuit of backend {index} did not open")
-
-    def assert_no_leaked_connections(self, timeout=2.0):
-        # The load balancer lowers active_conns just AFTER it has sent the
-        # response, so the last handler thread may still be finishing when
-        # the client returns. Wait for it; a genuine leak never reaches 0.
-        deadline = time.time() + timeout
-
-        while time.time() < deadline:
-            if all(b.active_conns == 0 for b in self.backends):
-                return
-
-            time.sleep(0.01)
-
-        for backend in self.backends:
-            self.assertEqual(
-                backend.active_conns,
-                0,
-                f"Backend-{backend.port} leaked an active connection"
-            )
-
-    # ------------------------------------------------------------------
-    # Tests
-    # ------------------------------------------------------------------
+class FailoverIntegrationTests(LoadBalancerTestCase):
 
     def test_requests_succeed_and_failed_backend_is_excluded(self):
         self.fakes[1].stop()                       # backend 1 becomes unavailable
@@ -290,7 +73,7 @@ class FailoverIntegrationTests(unittest.TestCase):
         self.assert_no_leaked_connections()
 
     def test_circuit_closes_after_backend_recovers(self):
-        transitions = self.use_fast_breaker(1, open_seconds=0.3)
+        transitions = self.use_controlled_breaker(1, open_seconds=10)
         dead_port = self.backends[1].port
 
         self.fakes[1].stop()
@@ -298,7 +81,7 @@ class FailoverIntegrationTests(unittest.TestCase):
 
         # Bring the backend back on the same port and let the cooldown pass.
         self.fakes[1].start(port=dead_port)
-        time.sleep(0.5)
+        self.clock.advance(10)
 
         # The next request routed to it is the HALF_OPEN trial request.
         results = self.get_many(9)
@@ -313,12 +96,31 @@ class FailoverIntegrationTests(unittest.TestCase):
 
         self.assert_no_leaked_connections()
 
+    def test_circuit_stays_open_until_cooldown_has_passed(self):
+        transitions = self.use_controlled_breaker(1, open_seconds=10)
+        dead_port = self.backends[1].port
+
+        self.fakes[1].stop()
+        self.drive_until_open(1)
+        self.fakes[1].start(port=dead_port)        # healthy again...
+
+        self.clock.advance(9.9)                    # ...but cooldown not over
+
+        results = self.get_many(12)
+
+        self.assertEqual({status for status, _, _ in results}, {200})
+        self.assertNotIn(self.name(1), {name for _, name, _ in results})
+        self.assertEqual(self.state(1), OPEN)
+        self.assertEqual(transitions, [(CLOSED, OPEN)])
+
+        self.assert_no_leaked_connections()
+
     def test_failed_trial_request_reopens_circuit_without_failing_client(self):
-        transitions = self.use_fast_breaker(1, open_seconds=0.3)
+        transitions = self.use_controlled_breaker(1, open_seconds=10)
 
         self.fakes[1].stop()                       # stays down
         self.drive_until_open(1)
-        time.sleep(0.5)                            # cooldown passes
+        self.clock.advance(10)                     # cooldown passes
 
         results = self.get_many(9)
 
@@ -327,11 +129,14 @@ class FailoverIntegrationTests(unittest.TestCase):
         self.assertEqual({status for status, _, _ in results}, {200})
         self.assertNotIn(self.name(1), {name for _, name, _ in results})
 
-        # The breaker went OPEN -> HALF_OPEN (trial) -> OPEN (trial failed).
+        # The breaker went OPEN -> HALF_OPEN (trial) -> OPEN (trial failed),
+        # and the new cooldown started when the trial failed.
         self.assertEqual(
-            transitions[:3],
+            transitions,
             [(CLOSED, OPEN), (OPEN, HALF_OPEN), (HALF_OPEN, OPEN)]
         )
+        self.assertEqual(self.state(1), OPEN)
+        self.assertEqual(self.backends[1].breaker.snapshot()["times_opened"], 2)
 
         self.assert_no_leaked_connections()
 

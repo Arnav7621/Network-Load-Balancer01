@@ -10,6 +10,9 @@ sys.path.insert(
         os.path.join(os.path.dirname(__file__), "..", "lb")
     )
 )
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from helpers import FakeClock
 
 from algorithms import (
     Backend,
@@ -18,7 +21,7 @@ from algorithms import (
     LeastConnections
 )
 import algorithms
-from circuit_breaker import OPEN
+from circuit_breaker import OPEN, CircuitBreaker
 
 
 class TestRoutingAlgorithms(unittest.TestCase):
@@ -246,6 +249,39 @@ class TestRoutingAlgorithms(unittest.TestCase):
         for name, router in self.all_routers():
             with self.subTest(algorithm=name):
                 self.assertIsNone(router.pick([]))
+
+
+    def test_open_circuit_is_excluded_until_cooldown_then_probed_once(self):
+        router = RoundRobin()
+        clock = FakeClock()
+        backend = self.backends[1]
+
+        backend.breaker = CircuitBreaker(
+            "Backend-9002",
+            failure_threshold=3,
+            open_seconds=10,
+            clock=clock
+        )
+
+        self.open_circuit(backend)
+
+        def ports():
+            return [router.pick(self.backends).port for _ in range(6)]
+
+        # During the cooldown the backend is never selected.
+        self.assertNotIn(9002, ports())
+
+        # Cooldown over: it is eligible again as a probe candidate.
+        clock.advance(10)
+        self.assertIn(9002, ports())
+
+        # A probe is claimed (HALF_OPEN): no second request is routed to it.
+        self.assertTrue(backend.breaker.acquire())
+        self.assertNotIn(9002, ports())
+
+        # The probe succeeds: the circuit closes and routing resumes.
+        backend.breaker.record_success()
+        self.assertIn(9002, ports())
 
 
 if __name__ == "__main__":

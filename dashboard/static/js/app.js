@@ -7,11 +7,18 @@
    CONFIGURATION
    ========================================================= */
 
+/*
+   The dashboard talks to its own server, which forwards these requests to
+   the load balancer (see dashboard/app.py and its LB_URL setting).
+   Relative URLs work wherever the dashboard is served from, including
+   inside Docker.
+*/
+
 const STATS_URL =
-    "http://127.0.0.1:8080/stats";
+    "/api/stats";
 
 const ALGORITHM_URL =
-    "http://127.0.0.1:8080/algorithm";
+    "/api/algorithm";
 
 
 /* =========================================================
@@ -1657,7 +1664,7 @@ function createBackendRow(
             </strong>
 
             <span>
-                127.0.0.1:${backendPort}
+                ${backend.host || "127.0.0.1"}:${backendPort}
             </span>
 
         </div>
@@ -2060,10 +2067,71 @@ function updateDashboard(stats) {
 
 
 /* =========================================================
+   API ERRORS
+   ========================================================= */
+
+/*
+   Turn an unsuccessful response from the dashboard server into an Error
+   whose message explains what went wrong, for example:
+   "HTTP 502: Cannot reach the load balancer: <LB_URL>: <reason>"
+*/
+
+async function apiError(response) {
+
+    let message =
+        `HTTP ${response.status}`;
+
+    try {
+
+        const body =
+            await response.json();
+
+        const reason =
+            [
+                body.error || body.message,
+                body.detail
+            ]
+                .filter(Boolean)
+                .join(": ");
+
+        if (reason) {
+
+            message =
+                `${message}: ${reason}`;
+        }
+
+    } catch (ignored) {
+
+        /* The body was not JSON: keep the HTTP status only. */
+    }
+
+    return new Error(message);
+}
+
+
+/*
+   A TypeError from fetch() means the browser could not reach the dashboard
+   server itself (it stopped, or the network is down).
+*/
+
+function describeError(error) {
+
+    if (error instanceof TypeError) {
+
+        return "The dashboard server is not responding";
+    }
+
+    return (
+        error && error.message
+    ) || "Unknown error";
+}
+
+
+/* =========================================================
    CONNECTION ERROR
    ========================================================= */
 
-function showConnectionError() {
+function showConnectionError(error) {
 
     const verdict =
         document.getElementById(
@@ -2083,17 +2151,25 @@ function showConnectionError() {
         );
 
 
+    const dashboardDown =
+        error instanceof TypeError;
+
+
     if (title) {
 
         title.textContent =
-            "Load balancer unavailable";
+            dashboardDown
+                ? "Dashboard server unreachable"
+                : "Load balancer unavailable";
     }
 
 
     if (subtitle) {
 
         subtitle.textContent =
-            "Unable to retrieve statistics";
+            error
+                ? describeError(error)
+                : "Unable to retrieve statistics";
     }
 
 
@@ -2170,9 +2246,7 @@ async function fetchStats() {
 
         if (!response.ok) {
 
-            throw new Error(
-                `HTTP ${response.status}`
-            );
+            throw await apiError(response);
         }
 
 
@@ -2192,7 +2266,7 @@ async function fetchStats() {
         );
 
 
-        showConnectionError();
+        showConnectionError(error);
     }
 }
 
@@ -2218,6 +2292,22 @@ function startMonitoring() {
    ========================================================= */
 
 function initializeCharts() {
+
+    /*
+       Chart.js is loaded from a CDN. Without internet access it is
+       missing: skip the charts so the rest of the dashboard keeps working.
+    */
+
+    if (typeof Chart === "undefined") {
+
+        console.warn(
+            "Chart.js did not load (no internet access?). " +
+            "The charts are disabled; all other panels still work."
+        );
+
+        return;
+    }
+
 
     const trafficCanvas =
         document.getElementById(
@@ -3028,6 +3118,9 @@ function initializeAlgorithmSelector() {
 
                             throw new Error(
                                 result.message ||
+                                [result.error, result.detail]
+                                    .filter(Boolean)
+                                    .join(": ") ||
                                 "Failed to change algorithm"
                             );
 
@@ -3088,7 +3181,8 @@ function initializeAlgorithmSelector() {
 
 
                         alert(
-                            "Unable to change routing algorithm."
+                            "Unable to change routing algorithm: " +
+                            describeError(error)
                         );
 
 

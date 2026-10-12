@@ -1,0 +1,17 @@
+# Everything needed to run the application and all of the project's tooling.
+# The application itself needs only Flask (see backend/requirements.txt).
+Flask==3.1.3
+
+# Tests: the dashboard/backend tests run without these, but the Docker
+# Compose consistency checks are skipped if PyYAML is missing.
+PyYAML
+
+# Benchmark graphs (docs/load-testing/generate_graphs.py)
+matplotlib
+numpy
+
+# Wireshark capture analyzer (docs/wireshark/analyze_capture.py) and its tests
+scapy
+
+# Load testing (the recorded benchmark used Locust 2.34.0)
+locust
