@@ -6,8 +6,6 @@ a choice of routing algorithms, watches the health of every backend, keeps
 serving clients when a backend fails, and shows what is happening in a web
 dashboard.
 
-This project was built for the Computer Networks Laboratory (CSE20110) mini
-project.
 
 ## Contents
 
@@ -430,6 +428,19 @@ requirements-dev.txt   All Python packages used by the project
 | Charts are empty | Chart.js is loaded from the internet; check the connection. |
 | A request takes 10 seconds then succeeds | A backend is hung (accepts connections but does not answer). See [How it works](#how-it-works). |
 | Wireshark shows nothing on the loopback interface | Capture on `lo0` (macOS) or `lo` (Linux), not Wi-Fi; make sure you are running Vantora without Docker. |
+
+## Project Team & Academic Details
+
+Institution: Department of Computer Science and Engineering, MIT World Peace University, Pune
+Course: Computer Networks Laboratory (CSE20110)
+Academic Year: 2026–2027
+
+Sr. No.	PRN	Student Name
+1	1262241524	Nayna Sharma
+2	1262241534	Harshad Pardhi
+3	1262241729	Aaryan Kumbhare
+4	1262241775	Anurag Harapanahalli
+
 
 ## More documentation
 
