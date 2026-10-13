@@ -660,6 +660,43 @@ function updateKPIs(stats) {
         healthyElement.textContent =
             `${healthyBackends}/${totalBackends}`;
     }
+
+
+    /* Colour the KPI cards when the data shows a problem. */
+
+    const errorsCard =
+        errorsElement
+            ? errorsElement.closest(".kpi")
+            : null;
+
+    if (errorsCard) {
+
+        errorsCard.classList.toggle(
+            "is-alert",
+            totalErrors > 0
+        );
+    }
+
+
+    const healthyCard =
+        healthyElement
+            ? healthyElement.closest(".kpi")
+            : null;
+
+    if (healthyCard) {
+
+        healthyCard.classList.toggle(
+            "is-alert",
+            totalBackends > 0 &&
+            healthyBackends === 0
+        );
+
+        healthyCard.classList.toggle(
+            "is-warning",
+            healthyBackends > 0 &&
+            healthyBackends < totalBackends
+        );
+    }
 }
 
 
@@ -1044,6 +1081,14 @@ function updateRoutingAlgorithm(stats) {
     options.forEach(
         option => {
 
+            option.setAttribute(
+                "aria-selected",
+                String(
+                    option.dataset.algorithm === algorithm
+                )
+            );
+
+
             if (
                 option.dataset.algorithm ===
                 algorithm
@@ -1086,6 +1131,10 @@ function updateTimestamp() {
 
     const now =
         new Date();
+
+
+    lastUpdateTime =
+        now.getTime();
 
 
     timestamp.textContent =
@@ -1331,6 +1380,29 @@ function updateTopology(stats) {
                             backend.total_requests || 0
                         )
                     );
+
+                const routingRow =
+                    routingElement.closest(".routing-backend");
+
+                if (routingRow) {
+
+                    const share =
+                        totalRequests > 0
+                            ? (
+                                Number(
+                                    backend.total_requests || 0
+                                ) / totalRequests
+                            ) * 100
+                            : 0;
+
+                    routingRow.style.setProperty(
+                        "--share",
+                        `${share.toFixed(1)}%`
+                    );
+
+                    routingRow.title =
+                        `${share.toFixed(1)}% of requests`;
+                }
             }
 
         }
@@ -1895,6 +1967,29 @@ function createBackendRow(
     );
 
 
+    const columnLabels = [
+        "Backend",
+        "Status",
+        "Circuit",
+        "Port",
+        "Requests",
+        "Active",
+        "Errors",
+        "Avg response",
+        "Traffic"
+    ];
+
+    Array.from(row.children).forEach(
+        (cell, index) => {
+
+            cell.setAttribute(
+                "data-label",
+                columnLabels[index] || ""
+            );
+        }
+    );
+
+
     return row;
 }
 
@@ -1993,7 +2088,7 @@ function updateFooter(stats) {
 
 
     footerStatus.textContent =
-        "Polling";
+        refreshStatusText();
 }
 
 
@@ -2063,6 +2158,9 @@ function updateDashboard(stats) {
 
 
     updateTimestamp();
+
+
+    renderRefreshState();
 }
 
 
@@ -2187,6 +2285,28 @@ function showConnectionError(error) {
     }
 
 
+
+    /* Do not show a green "healthy" figure when nothing could be read. */
+
+    const healthyValue =
+        document.getElementById(
+            "healthy-count"
+        );
+
+    if (healthyValue) {
+
+        const healthyCard =
+            healthyValue.closest(".kpi");
+
+        if (healthyCard) {
+
+            healthyCard.classList.add(
+                "is-alert"
+            );
+        }
+    }
+
+
     const footerStatus =
         document.getElementById(
             "poll-status"
@@ -2275,14 +2395,530 @@ async function fetchStats() {
    MONITORING LOOP
    ========================================================= */
 
+/* =========================================================
+   REFRESH CONTROLS
+   Manual refresh, pause/resume and the auto-refresh interval.
+   Every refresh calls the same /api/stats request as before.
+   ========================================================= */
+
+const REFRESH_OPTIONS_MS = [1000, 2000, 5000, 10000, 30000];
+
+const REFRESH_DEFAULT_MS = 2000;
+
+const REFRESH_STORAGE_KEY = "vantora.refreshMs";
+
+let refreshMs = loadRefreshInterval();
+
+let refreshPaused = false;
+
+let refreshTimer = null;
+
+let fetchInFlight = false;
+
+let lastUpdateTime = null;
+
+
+function loadRefreshInterval() {
+
+    try {
+
+        const saved =
+            Number(
+                window.localStorage.getItem(
+                    REFRESH_STORAGE_KEY
+                )
+            );
+
+        if (
+            REFRESH_OPTIONS_MS.includes(saved)
+        ) {
+
+            return saved;
+        }
+
+    } catch (ignored) {
+
+        /* Browser storage is not available: use the default. */
+    }
+
+    return REFRESH_DEFAULT_MS;
+}
+
+
+function saveRefreshInterval(milliseconds) {
+
+    try {
+
+        window.localStorage.setItem(
+            REFRESH_STORAGE_KEY,
+            String(milliseconds)
+        );
+
+    } catch (ignored) {
+
+        /* Not saved; the choice still applies to this page. */
+    }
+}
+
+
+async function refreshNow() {
+
+    /* Never start a second request while one is still running. */
+
+    if (fetchInFlight) {
+
+        return;
+    }
+
+    fetchInFlight = true;
+
+    const button =
+        document.getElementById(
+            "refresh-now"
+        );
+
+    if (button) {
+
+        button.classList.add(
+            "is-busy"
+        );
+    }
+
+    try {
+
+        /* Keep the spinner visible long enough to be noticed. */
+
+        await Promise.all([
+            fetchStats(),
+            new Promise(
+                resolve => setTimeout(resolve, 400)
+            )
+        ]);
+
+    } finally {
+
+        fetchInFlight = false;
+
+        if (button) {
+
+            button.classList.remove(
+                "is-busy"
+            );
+        }
+    }
+}
+
+
+function scheduleRefresh() {
+
+    if (refreshTimer !== null) {
+
+        clearInterval(
+            refreshTimer
+        );
+
+        refreshTimer = null;
+    }
+
+    if (!refreshPaused) {
+
+        refreshTimer =
+            setInterval(
+                refreshNow,
+                refreshMs
+            );
+    }
+}
+
+
+function setRefreshPaused(paused) {
+
+    refreshPaused = paused;
+
+    scheduleRefresh();
+
+    renderRefreshState();
+
+    if (!paused) {
+
+        refreshNow();
+    }
+}
+
+
+function setRefreshInterval(milliseconds) {
+
+    if (
+        !REFRESH_OPTIONS_MS.includes(milliseconds)
+    ) {
+
+        return;
+    }
+
+    refreshMs = milliseconds;
+
+    saveRefreshInterval(milliseconds);
+
+    scheduleRefresh();
+
+    renderRefreshState();
+}
+
+
+function refreshStatusText() {
+
+    return refreshPaused
+        ? "Auto-refresh paused"
+        : `Refreshing every ${refreshMs / 1000}s`;
+}
+
+
+function updateAge() {
+
+    const element =
+        document.getElementById(
+            "last-updated-age"
+        );
+
+    if (!element) {
+
+        return;
+    }
+
+    if (lastUpdateTime === null) {
+
+        element.textContent = "";
+
+        return;
+    }
+
+    const seconds =
+        Math.max(
+            0,
+            Math.round(
+                (Date.now() - lastUpdateTime) / 1000
+            )
+        );
+
+    element.textContent =
+        refreshPaused
+            ? `paused · ${seconds}s ago`
+            : `${seconds}s ago`;
+}
+
+
+function renderRefreshState() {
+
+    document.documentElement.setAttribute(
+        "data-refresh",
+        refreshPaused ? "paused" : "live"
+    );
+
+    const toggle =
+        document.getElementById(
+            "refresh-toggle"
+        );
+
+    if (toggle) {
+
+        const label =
+            refreshPaused
+                ? "Resume auto-refresh"
+                : "Pause auto-refresh";
+
+        toggle.setAttribute(
+            "aria-pressed",
+            String(refreshPaused)
+        );
+
+        toggle.setAttribute(
+            "aria-label",
+            label
+        );
+
+        toggle.title = label;
+    }
+
+    const select =
+        document.getElementById(
+            "refresh-interval"
+        );
+
+    if (
+        select &&
+        Number(select.value) !== refreshMs
+    ) {
+
+        select.value = String(refreshMs);
+    }
+
+    const status =
+        document.getElementById(
+            "live-status"
+        );
+
+    if (status) {
+
+        status.classList.toggle(
+            "paused",
+            refreshPaused
+        );
+
+        const text =
+            status.querySelector(
+                "span:last-child"
+            );
+
+        if (text && refreshPaused) {
+
+            text.textContent = "PAUSED";
+
+        } else if (
+            text &&
+            text.textContent.trim() === "PAUSED"
+        ) {
+
+            text.textContent = "LIVE";
+        }
+    }
+
+    document.querySelectorAll(
+        ".live-label"
+    ).forEach(
+        element => {
+
+            element.textContent =
+                refreshPaused
+                    ? "PAUSED"
+                    : "LIVE";
+        }
+    );
+
+    const footerStatus =
+        document.getElementById(
+            "poll-status"
+        );
+
+    if (
+        footerStatus &&
+        footerStatus.textContent !== "Connection error"
+    ) {
+
+        footerStatus.textContent =
+            refreshStatusText();
+    }
+
+    updateAge();
+}
+
+
+function initializeRefreshControls() {
+
+    const refreshButton =
+        document.getElementById(
+            "refresh-now"
+        );
+
+    const toggleButton =
+        document.getElementById(
+            "refresh-toggle"
+        );
+
+    const intervalSelect =
+        document.getElementById(
+            "refresh-interval"
+        );
+
+    if (refreshButton) {
+
+        refreshButton.addEventListener(
+            "click",
+            refreshNow
+        );
+    }
+
+    if (toggleButton) {
+
+        toggleButton.addEventListener(
+            "click",
+            () => setRefreshPaused(
+                !refreshPaused
+            )
+        );
+    }
+
+    if (intervalSelect) {
+
+        intervalSelect.value =
+            String(refreshMs);
+
+        intervalSelect.addEventListener(
+            "change",
+            () => setRefreshInterval(
+                Number(intervalSelect.value)
+            )
+        );
+    }
+
+    renderRefreshState();
+}
+
+
+/* =========================================================
+   TOAST MESSAGES
+   ========================================================= */
+
+function showToast(message, type = "info", duration = 4500) {
+
+    const region =
+        document.getElementById(
+            "toast-region"
+        );
+
+    if (!region) {
+
+        return;
+    }
+
+    const toast =
+        document.createElement("div");
+
+    toast.className =
+        `toast ${type}`;
+
+    toast.setAttribute(
+        "role",
+        type === "error" ? "alert" : "status"
+    );
+
+    toast.textContent = message;
+
+    region.appendChild(toast);
+
+    while (region.children.length > 4) {
+
+        region.removeChild(
+            region.firstChild
+        );
+    }
+
+    setTimeout(
+        () => toast.remove(),
+        duration
+    );
+}
+
+
+/* =========================================================
+   ALGORITHM SELECTOR: KEYBOARD AND SCREEN-READER SUPPORT
+   ========================================================= */
+
+function enhanceAlgorithmSelectorAccessibility() {
+
+    const selector =
+        document.getElementById(
+            "algorithm"
+        );
+
+    const trigger =
+        document.getElementById(
+            "algorithm-trigger"
+        );
+
+    if (!selector || !trigger) {
+
+        return;
+    }
+
+    new MutationObserver(
+        () => trigger.setAttribute(
+            "aria-expanded",
+            String(
+                selector.classList.contains("open")
+            )
+        )
+    ).observe(
+        selector,
+        {
+            attributes: true,
+            attributeFilter: ["class"]
+        }
+    );
+
+    selector.addEventListener(
+        "keydown",
+        event => {
+
+            const isOpen =
+                selector.classList.contains("open");
+
+            if (
+                event.key === "Escape" &&
+                isOpen
+            ) {
+
+                event.preventDefault();
+
+                selector.classList.remove("open");
+
+                trigger.focus();
+
+                return;
+            }
+
+            if (
+                event.key !== "ArrowDown" &&
+                event.key !== "ArrowUp"
+            ) {
+
+                return;
+            }
+
+            event.preventDefault();
+
+            if (!isOpen) {
+
+                trigger.click();
+            }
+
+            const options =
+                Array.from(
+                    selector.querySelectorAll(
+                        ".algorithm-option"
+                    )
+                );
+
+            const step =
+                event.key === "ArrowDown" ? 1 : -1;
+
+            const current =
+                options.indexOf(
+                    document.activeElement
+                );
+
+            const next =
+                current === -1
+                    ? (step === 1 ? 0 : options.length - 1)
+                    : (current + step + options.length) %
+                        options.length;
+
+            options[next].focus();
+        }
+    );
+}
+
+
 function startMonitoring() {
 
-    fetchStats();
+    initializeRefreshControls();
 
+    refreshNow();
+
+    scheduleRefresh();
 
     setInterval(
-        fetchStats,
-        2000
+        updateAge,
+        1000
     );
 }
 
@@ -3077,6 +3713,11 @@ function initializeAlgorithmSelector() {
                         option.disabled = true;
 
 
+                        selector.classList.add(
+                            "is-busy"
+                        );
+
+
                         /*
                            Send algorithm change
                            to load balancer
@@ -3172,6 +3813,12 @@ function initializeAlgorithmSelector() {
                         await fetchStats();
 
 
+                        showToast(
+                            `Routing algorithm changed to ${result.algorithm}`,
+                            "success"
+                        );
+
+
                     } catch (error) {
 
                         console.error(
@@ -3180,9 +3827,10 @@ function initializeAlgorithmSelector() {
                         );
 
 
-                        alert(
-                            "Unable to change routing algorithm: " +
-                            describeError(error)
+                        showToast(
+                            "Could not change routing algorithm: " +
+                            describeError(error),
+                            "error"
                         );
 
 
@@ -3190,6 +3838,11 @@ function initializeAlgorithmSelector() {
 
                         option.disabled =
                             false;
+
+
+                        selector.classList.remove(
+                            "is-busy"
+                        );
 
                     }
 
@@ -3257,6 +3910,9 @@ document.addEventListener(
         */
 
         initializeAlgorithmSelector();
+
+
+        enhanceAlgorithmSelectorAccessibility();
 
 
         /*
