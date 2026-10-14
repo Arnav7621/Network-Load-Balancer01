@@ -509,21 +509,29 @@ Vantora/
 ├── tests/
 ├── docs/
 │   ├── screenshots/
+│   │   ├── dashboard.png
+│   │   ├── docker-compose-status.png
 │   │   ├── graphs.png
 │   │   ├── health.png
+│   │   ├── test-results.png
 │   │   └── traffic topology.png
 │   ├── wireshark/
 │   │   ├── README.md
 │   │   ├── analyze_capture.py
 │   │   ├── generate_traffic.py
 │   │   ├── backend-traffic-evidence.png
+│   │   ├── failover-backend-9002-down.png
+│   │   ├── follow-tcp-stream.png
+│   │   ├── least-connections-concurrent.png
+│   │   ├── recovery-backend-9002.png
+│   │   ├── round-robin-distribution.png
+│   │   ├── weighted-distribution.png
 │   │   ├── round-robin-distribution.pcapng
 │   │   ├── weighted-distribution.pcapng
 │   │   ├── least-connections-concurrent.pcapng
 │   │   ├── failover-backend-9002-down.pcapng
 │   │   └── recovery-backend-9002.pcapng
 │   ├── architecture-and-testing.md
-│   ├── submission-checklist.md
 │   └── load-testing/
 │       └── benchmark-comparison.md
 ├── docker-compose.yml
