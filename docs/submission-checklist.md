@@ -1,151 +1,248 @@
-# Submission checklist
+# Vantora Submission Checklist
 
-Evidence is marked **Complete** (in the repository and checked), **Complete,
-limited** (present but with a stated gap) or **Needs your action** (you must
-produce it). Nothing marked "Needs your action" exists yet.
+Evidence is marked **Complete** when it exists and has been checked, **Complete, limited** when it exists with a documented limitation, or **Needs your action** when additional evidence or work is required.
 
-## Artifacts to submit
+## Artifacts to Submit
 
-| # | Artifact | Where | Status |
+| # | Artifact | Location | Status |
 |---|---|---|---|
-| 1 | Source code: load balancer, backend, dashboard | `lb/`, `backend/`, `dashboard/` | Complete |
-| 2 | README (setup, run, Docker, endpoints, configuration, limitations) | `README.md` | Complete |
-| 3 | Problem statement and objectives | Written below | Complete (copy into your report) |
-| 4 | Architecture, request flow, failure handling, test strategy | `docs/architecture-and-testing.md` | Complete |
-| 5 | Protocol / message design: endpoints, status codes, headers | `README.md` (Endpoints), `docs/architecture-and-testing.md` | Complete |
-| 6 | Docker Compose (3 backends, load balancer, dashboard) | `docker-compose.yml`, `*/Dockerfile` | **Needs your action:** run `docker compose up --build`, confirm all five services are healthy, take a screenshot of `docker compose ps`. The dashboard service was added without being run in Docker |
-| 7 | Automated tests and their result | `tests/` | Complete. Recorded: 107 tests OK on Python 3.12 (12 October 2026). **Needs your action:** run on your own computer and record the result |
-| 8 | Test report for normal and failure conditions | Test names in `docs/architecture-and-testing.md`; live results from the demo | Complete, limited: write the results table from your own run (template below) |
-| 9 | Performance results (throughput, response time, failures) | `docs/load-testing/` | Complete, limited: one run per algorithm, identical backends. State this in the report. The old `locust-results.txt` is superseded; do not cite it |
-| 10 | Wireshark: client-to-load-balancer and load-balancer-to-backend captures | `docs/wireshark/`, `client-to-load-balancer.pcapng` | Complete, limited: genuine captures but every client request went to Backend-9001 |
-| 11 | Wireshark: distribution across all backends, failover, recovery, plus screenshots | Recipes in `docs/wireshark/README.md` | **Needs your action** (5 captures and 6 screenshots, listed in that file) |
-| 12 | Dashboard screenshots | – | **Needs your action** (list below) |
-| 13 | Five-minute demonstration | Script below | **Needs your action:** rehearse it once |
-| 14 | Individual contribution of each team member | Template below | **Needs your action** |
-| 15 | Viva preparation | Notes below | Complete (read and adapt) |
+| 1 | Source code for load balancer, backend services, and dashboard | `lb/`, `backend/`, `dashboard/` | Complete |
+| 2 | README covering setup, execution, Docker, endpoints, configuration, and limitations | `README.md` | Complete |
+| 3 | Problem statement and objectives | This document, below | Complete — include in the final report |
+| 4 | Architecture, request flow, failure handling, and test strategy | `docs/architecture-and-testing.md` | Complete — updated with latest verification |
+| 5 | Protocol and message design, endpoints, status codes, and headers | `README.md`, `docs/architecture-and-testing.md` | Complete |
+| 6 | Docker Compose deployment with three backends, load balancer, and dashboard | `docker-compose.yml`, Dockerfiles | Complete — all five services were verified healthy on 13 October 2026 |
+| 7 | Automated tests and test results | `tests/` | Complete — 111 tests passed in 5.924 seconds, with no failures or skips |
+| 8 | Test report for normal and failure conditions | `docs/architecture-and-testing.md`, demonstration results | Complete, limited — record individual scenario results after verifying them |
+| 9 | Performance evaluation: throughput, response time, and request outcomes | `docs/load-testing/` | Complete, limited — one recorded run per algorithm; identical backends and a single-computer test environment |
+| 10 | Wireshark packet captures | `docs/wireshark/` | Complete, limited — five captures are present; verify that each demonstrates its intended scenario |
+| 11 | Wireshark screenshots and analysis | `docs/wireshark/README.md` | Needs your action — confirm the required screenshots have been saved |
+| 12 | Dashboard screenshots | Browser screenshots | Needs your action |
+| 13 | Five-minute demonstration | Demonstration script below | Needs your action — rehearse once |
+| 14 | Individual team contributions | Contribution table below | Needs your action — fill in actual contributions |
+| 15 | Viva preparation | Viva notes below | Prepared — review and adapt before the viva |
 
-### Problem statement and objectives (for your report)
+## Problem Statement and Objectives
 
-Web services need to stay available and responsive when demand grows and when
-servers fail. A single server is a bottleneck and a single point of failure.
-Vantora is a load balancer that sits in front of three backend servers and
-(1) distributes HTTP requests with a choice of algorithms, (2) detects failed
-backends and stops sending them traffic, (3) keeps serving clients while a
-backend is down by retrying on another one, (4) shows the system's state in
-real time, and (5) is evaluated with automated tests, a load test and packet
-captures.
+Web services need to remain available and responsive as demand increases and servers fail. A single server can become a performance bottleneck and a single point of failure.
 
-## Evidence you still have to produce
+Vantora is an HTTP reverse-proxy load balancer that sits in front of three backend servers. Its objectives are to:
 
-- [ ] `docker compose ps` screenshot showing five healthy services
-- [ ] Dashboard, all backends healthy
-- [ ] Dashboard with one backend stopped (status "Degraded", circuit event)
-- [ ] Dashboard after the algorithm is changed from the selector
-- [ ] Wireshark captures A to E and screenshots (see `docs/wireshark/README.md`)
-- [ ] Terminal screenshot of `python3 -m unittest discover -s tests -v` ending with `OK`
-- [ ] Your own test-run result and Python version
-- [ ] Team contribution table
-- [ ] Optional: a `/slow`-based benchmark that can separate the algorithms (none has been run, so make no claims about it)
+1. Distribute HTTP requests using configurable Round Robin, Weighted Round Robin, and Least Connections algorithms.
+2. Monitor backend health and avoid routing traffic to unavailable servers.
+3. Use circuit breaking, retry, and failover mechanisms to improve service continuity when a backend fails.
+4. Provide a monitoring dashboard showing backend status, request statistics, routing algorithms, and events.
+5. Evaluate functionality through automated tests, load testing, and Wireshark packet captures.
 
-## Test results table (fill in from your own demonstration)
+## Evidence Checklist
 
-| Scenario | How to run it | Expected result | Your result |
+### Deployment and Testing
+
+- [x] Source code, README, and architecture documentation available.
+- [x] Docker Compose deployment started and all five services confirmed healthy on 13 October 2026.
+- [x] Automated test suite executed: 111 tests passed in 5.924 seconds.
+- [x] Load balancer returned HTTP 200 during runtime verification.
+- [x] Dashboard returned HTTP 200 during runtime verification.
+- [x] `/stats` showed all three backends UP and their circuit breakers CLOSED during verification.
+- [ ] Save a terminal screenshot of `docker compose ps` showing all five healthy services.
+- [ ] Save a terminal screenshot of the automated test run ending with `OK`.
+- [ ] Record the exact Python version used for the test run.
+- [ ] Verify and record individual normal-operation and failure-scenario results.
+
+### Dashboard Screenshots
+
+- [ ] Dashboard with all three backends healthy.
+- [ ] Dashboard while one backend is stopped, showing the actual health and circuit-breaker state.
+- [ ] Dashboard after changing the routing algorithm using the selector.
+- [ ] Dashboard after backend recovery, showing the backend healthy again.
+
+### Wireshark Evidence
+
+Five packet captures are present in `docs/wireshark/`:
+
+- [x] `round-robin-distribution.pcapng`
+- [x] `weighted-distribution.pcapng`
+- [x] `least-connections-concurrent.pcapng`
+- [x] `failover-backend-9002-down.pcapng`
+- [x] `recovery-backend-9002.pcapng`
+
+Additional packet captures and evidence files are also present in the directory.
+
+- [ ] Open each required capture in Wireshark and verify that it shows the intended scenario.
+- [ ] Save the required Wireshark screenshots listed in `docs/wireshark/README.md`.
+- [ ] Include relevant packet filters, request distribution, failover, and recovery evidence in the report.
+
+### Reporting and Submission
+
+- [ ] Complete the test-results table below with observed results.
+- [ ] Complete the team contribution table.
+- [ ] Include the load-testing graphs and explain their limitations.
+- [ ] Rehearse the five-minute demonstration.
+- [ ] Run the final Git checks and commit the completed documentation.
+- [ ] Verify the final repository state before submission.
+
+An optional `/slow`-based benchmark may be performed to explore the effect of request duration on routing behavior. Do not claim results from this benchmark unless it has actually been run.
+
+## Test Results Table
+
+Fill in the final column only after performing each scenario and observing its result.
+
+| Scenario | How to Run | Expected Result | Observed Result |
 |---|---|---|---|
-| Round Robin split | `generate_traffic.py --algorithm "Round Robin" --requests 30` | 10 / 10 / 10 | |
-| Weighted split | `generate_traffic.py --algorithm "Weighted Round Robin" --requests 30` | 15 / 10 / 5 | |
-| Least Connections, one request at a time | `generate_traffic.py --algorithm "Least Connections" --requests 18` | 18 / 0 / 0 | |
-| Least Connections, overlapping slow requests | `generate_traffic.py --algorithm "Least Connections" --path "/slow?ms=500" --concurrency 6 --requests 18` | All three used, about 6 / 6 / 6 | |
-| Slow request succeeds | `curl "http://localhost:8080/slow"` | 200 after about 5 s | |
-| One backend stopped | Stop `backend-9002`, send 12 requests | All 200, none from 9002, circuit OPEN | |
-| Backend returns | Start it again, wait about 16 s, send 12 requests | 9002 serves again | |
-| All backends stopped | Stop all three | 503 | |
+| Round Robin distribution | `python docs/wireshark/generate_traffic.py --algorithm "Round Robin" --requests 30` | 10 / 10 / 10 requests | Pending final record |
+| Weighted Round Robin distribution | `python docs/wireshark/generate_traffic.py --algorithm "Weighted Round Robin" --requests 30` | 15 / 10 / 5 requests | Pending final record |
+| Least Connections, sequential requests | `python docs/wireshark/generate_traffic.py --algorithm "Least Connections" --requests 18` | Expected 18 / 0 / 0 when requests do not overlap | Pending final record |
+| Least Connections, overlapping requests | `python docs/wireshark/generate_traffic.py --algorithm "Least Connections" --path "/slow?ms=500" --concurrency 6 --requests 18` | All three backends used; approximately 6 / 6 / 6 | Pending final record |
+| Slow request | `curl -i "http://localhost:8080/slow"` | HTTP 200 after the configured delay, if within the timeout | Pending final record |
+| Backend failure | Stop Backend 9002 and send test requests | Requests continue through available backends; verify circuit and health states | Pending final record |
+| Backend recovery | Restart Backend 9002 and wait for recovery conditions | Backend becomes healthy and receives traffic again | Pending final record |
+| All backends unavailable | Stop all three backends and send a request | HTTP 503 when no backend is routable | Pending final record |
 
-(`generate_traffic.py` is `docs/wireshark/generate_traffic.py`, run with
-`python3` from the project root.)
+The traffic generator is located at `docs/wireshark/generate_traffic.py`. Run commands from the project root and use the project's Python environment where needed.
 
-## Five-minute demonstration
+**Important:** The expected results are test expectations, not a substitute for recording actual observations. Check the generator's command-line options with `--help` if any command differs from the current implementation.
 
-Start the stack (`docker compose up --build`, or the five commands in the
-README) and open the dashboard on one side of the screen.
+## Five-Minute Demonstration
 
-1. **What it is (30 s).** Show the architecture diagram in the README and the
-   dashboard: three healthy backends, current algorithm, verdict.
-2. **Distribution (60 s).** Run the Round Robin recipe. Show the request
-   counts on the dashboard rising 10 / 10 / 10. Change the algorithm from the
-   selector to Weighted Round Robin and run it again: 15 / 10 / 5.
-3. **Least Connections (45 s).** Run the one-at-a-time recipe (18 / 0 / 0) and
-   explain that nothing overlaps. Run the overlapping slow-request recipe and
-   show all backends used.
-4. **Failover (90 s).** Stop Backend-9002 (`docker compose stop backend-9002`).
-   Send traffic: every request still returns 200. Show the dashboard: the
-   circuit opens first (after three failed requests), then the health checker
-   marks the backend DOWN. Explain that the two mechanisms are independent.
-5. **Recovery (30 s).** Start the backend again. After the health checks and the
-   10-second cooldown it takes traffic again.
-6. **Packet evidence (45 s).** Open a capture in Wireshark with the filter from
-   `docs/wireshark/README.md`: one connection from the client to the load
-   balancer and a separate connection from the load balancer to the backend.
-7. **Results and limits (30 s).** Show the benchmark table and say what it does
-   and does not prove.
+Ensure Docker Compose is running and open the dashboard at `http://localhost:5050`. The load balancer is available at `http://localhost:8080`.
 
-## Viva notes
+### 1. Introduction — 30 seconds
 
-- **Why a reverse proxy rather than DNS round robin?** The proxy sees every
-  request, so it can check backend health, retry, and count connections;
-  DNS cannot.
-- **Round Robin, Weighted Round Robin or Least Connections?** Round Robin for
-  similar servers and similar requests; weighted when servers differ in
-  capacity; Least Connections when request durations vary. Least Connections
-  only helps when requests overlap, which is why one-at-a-time requests all go
-  to the first backend.
-- **Why both health checks and a circuit breaker?** Health checks are active
-  and work without traffic but are slow (about 6 s). The circuit breaker is
-  passive and reacts after three failed requests. Together they cover both.
-- **Why consecutive failures, not one?** One random error should not remove a
-  good server. Requiring three in a row (and two successes to recover) avoids
-  flapping.
-- **What is HALF_OPEN for?** After the cooldown one trial request tests the
-  backend. If it fails the circuit reopens, so a recovering server is not
-  flooded.
-- **Why a connect timeout and a read timeout?** An unreachable backend should
-  fail fast, but a slow healthy backend must be allowed to finish. One timeout
-  could not do both; that was a real bug (`/slow` takes 5 s, the old timeout
-  was 3 s).
-- **When is a retry safe?** Always if the request never reached the backend.
-  After it was sent, only for methods that can be repeated (GET, HEAD,
-  OPTIONS), because the backend may already have processed it.
-- **What if the load balancer fails?** It is a single point of failure. A
-  second instance with a virtual IP (keepalived/VRRP) or DNS failover would
-  fix that; it is outside this project.
-- **Layer 4 or Layer 7?** Layer 7: it understands HTTP (status codes, paths,
-  headers such as `X-Served-By`).
-- **What are the limits of the benchmark?** One run per algorithm, identical
-  backends, one computer. It cannot rank the algorithms.
-- **What does Wireshark show?** Two separate TCP connections (client to load
-  balancer, load balancer to backend), the added `X-Served-By` header, health
-  probes every 2 s, and a refused connection (TCP RST) when a backend is
-  stopped.
+Explain the problem Vantora solves. Show the architecture diagram, the three backends, the load balancer, and the dashboard.
 
-## Contribution table (template)
+### 2. Request Distribution — 60 seconds
 
-| Team member | Roll number | Parts built | Tests / evidence produced |
-|---|---|---|---|
-| | | | |
-| | | | |
-| | | | |
+Demonstrate Round Robin with 30 requests and explain the expected 10 / 10 / 10 distribution. Change the algorithm to Weighted Round Robin and demonstrate the expected 15 / 10 / 5 distribution.
 
-## Known limitations to state in the report
+### 3. Least Connections — 45 seconds
 
-See "Known limitations" in `README.md`. The ones examiners are most likely to
-ask about: only GET is proxied; no authentication; a single load balancer;
-exactly three backends with fixed weights; the benchmark's scope; and that
-Docker's internal network cannot be captured from the host.
+Compare sequential requests with overlapping slow requests. Explain that Least Connections is more meaningful when requests overlap because it considers active connections.
 
-## Before you submit
+### 4. Failover — 90 seconds
+
+Stop Backend 9002 using:
 
 ```bash
-python3 -m unittest discover -s tests -v          # record the result
-python3 docs/load-testing/generate_graphs.py      # graphs and table match the CSV files
-docker compose config --quiet && docker compose up --build   # check all five services become healthy
-git status                                        # nothing unintended is uncommitted
+docker compose stop backend-9002
 ```
+
+Send requests through the load balancer. Show that available backends continue serving requests, and explain the difference between the circuit breaker and the active health checker.
+
+### 5. Recovery — 30 seconds
+
+Restore Backend 9002:
+
+```bash
+docker compose start backend-9002
+```
+
+Wait for health checks and circuit-breaker recovery. Verify that the backend becomes healthy and can receive requests again.
+
+### 6. Packet Evidence — 45 seconds
+
+Open an appropriate capture in Wireshark. Explain the client-to-load-balancer and load-balancer-to-backend traffic, request distribution, and the evidence of failover or recovery.
+
+### 7. Results and Limitations — 30 seconds
+
+Show the load-testing graphs and explain what was measured, what the experiment supports, and what it does not prove.
+
+## Viva Notes
+
+**Why use a reverse proxy instead of DNS Round Robin?**
+
+A reverse proxy handles each request and can apply health checks, circuit breaking, retry policies, and connection-aware routing. DNS Round Robin distributes name-resolution responses and cannot provide the same per-request control.
+
+**When should each algorithm be used?**
+
+- **Round Robin:** Suitable when backend capacities and request workloads are similar.
+- **Weighted Round Robin:** Useful when backends have different capacities.
+- **Least Connections:** Useful when request durations vary and multiple requests overlap.
+
+With sequential short requests, Least Connections can repeatedly choose the first backend because its active-connection count returns to zero between requests.
+
+**Why have both health checks and a circuit breaker?**
+
+Health checks actively probe backends, even without client traffic. A circuit breaker reacts to failures observed during client requests. They monitor different signals and provide complementary protection.
+
+**Why require consecutive failures?**
+
+A single failure may be temporary. Requiring consecutive failures reduces unnecessary backend removal and repeated state changes.
+
+**What is HALF_OPEN?**
+
+After the circuit's cooldown, HALF_OPEN permits a trial request. Its outcome helps determine whether the backend can safely receive traffic again.
+
+**Why use separate connection and read timeouts?**
+
+A connection timeout limits the time spent establishing a connection. A read timeout limits the wait for a response. Separate settings allow an unreachable backend to fail quickly while permitting a slower but healthy backend to respond.
+
+**When is retrying safe?**
+
+Retries are safest when the request has not reached the backend. If a request may already have been processed, repeating it can duplicate side effects. Retry behavior must follow the implementation's method and failure rules.
+
+**What happens if the load balancer itself fails?**
+
+The load balancer is a single point of failure in this design. Redundancy, a virtual IP, or external failover could improve availability, but those are outside the current implementation.
+
+**Is Vantora a Layer 4 or Layer 7 load balancer?**
+
+It is a Layer 7 load balancer because it understands HTTP requests, paths, response status codes, and HTTP headers such as `X-Served-By`.
+
+**What are the benchmark limitations?**
+
+The benchmark has one recorded run per algorithm, identical backends, and a single-computer environment. It should not be used to claim universal performance superiority.
+
+**What does Wireshark demonstrate?**
+
+The captures can demonstrate TCP connections, request routing, the `X-Served-By` header when visible, health probes, and connection failures when a backend is unavailable. Interpret each capture according to its actual packets and capture environment.
+
+## Team Contribution Table
+
+Fill this in with the team's actual work. Do not assign contributions without confirming them with the team.
+
+| Team Member | Roll Number | Parts Built | Tests / Evidence Produced |
+|---|---|---|---|
+| Nayna Sharma | 1262241524 | To be confirmed | To be confirmed |
+| Harshad Pardhi | 1262241534 | To be confirmed | To be confirmed |
+| Aaryan Kumbhare | 1262241729 | To be confirmed | To be confirmed |
+| Anurag Harapanahalli | 1262241775 | To be confirmed | To be confirmed |
+
+## Known Limitations
+
+Refer to the Known Limitations section in `README.md`. Important points to discuss include:
+
+- The load balancer is a single point of failure.
+- The implementation is designed around three configured backends and fixed weights.
+- Authentication and production-grade access control are outside the current scope.
+- The benchmark is limited and does not establish a universal algorithm ranking.
+- Docker Desktop's internal network traffic may not be directly visible on the host's capture interface.
+- Automated tests cannot establish behavior for every possible workload or deployment environment.
+
+## Before You Submit
+
+Run these checks from the project root:
+
+```bash
+# Run automated tests
+.venv/bin/python -m unittest discover -s tests -v
+
+# Confirm the Python version used
+.venv/bin/python --version
+
+# Regenerate load-testing graphs if the CSV data has changed
+.venv/bin/python docs/load-testing/generate_graphs.py
+
+# Validate the Compose configuration
+docker compose config --quiet
+
+# Check service status
+docker compose ps
+
+# Check whitespace and patch errors
+git diff --check
+
+# Review outstanding changes
+git status
+```
+
+Ensure the required screenshots, final test results, team contributions, and report are included before submission.

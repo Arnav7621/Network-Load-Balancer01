@@ -1,125 +1,154 @@
-# Architecture and test strategy
+# Architecture and Test Strategy
 
 ## Components
 
 | Part | File | Responsibility |
 |---|---|---|
-| Load balancer | `lb/balancer.py` | HTTP server on port 8080: `/stats`, `/algorithm`, and the reverse proxy with retry and failover. Also runs the health-check thread |
-| Routing and backend state | `lb/algorithms.py` | `Backend` (health, statistics, circuit breaker) and the three algorithms |
-| Circuit breaker | `lb/circuit_breaker.py` | The CLOSED / OPEN / HALF_OPEN state machine, thread-safe, with an injectable clock |
-| Backend | `backend/app.py` | Flask server: `/`, `/health`, `/slow` |
-| Dashboard | `dashboard/app.py`, `templates/`, `static/` | Flask server that serves the page and forwards `/api/stats` and `/api/algorithm` to the load balancer |
+| Load balancer | `lb/balancer.py` | HTTP server on port 8080, `/stats`, `/algorithm`, reverse proxy, retry, failover, and health-check thread |
+| Routing and backend state | `lb/algorithms.py` | Backend health, statistics, circuit breaker integration, and three routing algorithms |
+| Circuit breaker | `lb/circuit_breaker.py` | Thread-safe CLOSED / OPEN / HALF_OPEN state machine with an injectable clock |
+| Backend | `backend/app.py` | Flask server providing `/`, `/health`, and `/slow` |
+| Dashboard | `dashboard/app.py`, `dashboard/templates/`, `dashboard/static/` | Monitoring interface that displays backend health, request statistics, routing algorithm, and events; forwards `/api/stats` and `/api/algorithm` to the load balancer |
 
-The load balancer uses Python's `ThreadingHTTPServer`: each request is handled
-in its own thread, so a slow request never blocks other clients. It talks to
-backends with `http.client`.
+The load balancer uses Python's `ThreadingHTTPServer`, which handles requests in separate threads so a slow request does not block every other client. It communicates with backend servers using Python's `http.client`.
 
-## Life of a request
+## Life of a Request
 
-1. The client sends `GET /path` to the load balancer (port 8080).
-2. `/stats` and `/algorithm` are answered by the load balancer itself. Anything
-   else is proxied.
-3. A time budget is started for the request (the request deadline, 20 s).
-4. The selected algorithm picks a backend from the **routable** ones: healthy
-   according to the health checker **and** with a circuit that allows traffic.
-5. The circuit breaker is asked for permission (`acquire()`). A circuit in
-   HALF_OPEN lets exactly one trial request through.
-6. The load balancer connects to the backend (connect timeout, 1 s), sends the
-   request, and waits for the response (read timeout, 10 s, limited by what is
-   left of the budget).
-7. If the backend answered, the outcome is recorded (a 5xx counts as a failure
-   for the circuit breaker and the error count), the active-connection count
-   is lowered, and the response is returned to the client with an
-   `X-Served-By` header. **From this point the request is never retried.**
-8. If the backend could not answer, the failure is recorded and, if repeating
-   the request is safe, another backend that has not been tried is picked
-   (back to step 4). Otherwise the client gets an error.
-9. When no backend is left, the client gets **503** (none available), **504**
-   (the last attempt timed out) or **502** (a request that is not safe to
-   repeat failed after it was sent).
+1. The client sends an HTTP GET request to the load balancer on port 8080.
+2. Requests to `/stats` and `/algorithm` are handled by the load balancer itself. Other supported requests are proxied to a backend.
+3. A request deadline of 20 seconds is established.
+4. The selected routing algorithm chooses a routable backend. A backend must be healthy according to the health checker, and its circuit breaker must permit traffic.
+5. The circuit breaker is checked using `acquire()`. When a circuit is HALF_OPEN, only one trial request is permitted.
+6. The load balancer connects to the selected backend with a 1-second connection timeout and waits for the response with a 10-second read timeout, subject to the remaining request deadline.
+7. If the backend responds, the result is recorded, the active-connection count is updated, and the response is returned to the client with an `X-Served-By` header. The response is not retried after it has been received.
+8. If the backend cannot respond, the failure is recorded. If retrying is safe, the load balancer selects another backend that has not already been tried.
+9. If no backend can complete the request, the client receives an appropriate error response: HTTP 503 when no backend is available, HTTP 504 when attempts time out, or HTTP 502 for certain failed requests that cannot safely be retried.
 
-## Health checks and circuit breaker: two separate mechanisms
+## Health Checks and Circuit Breaker
 
-| | Health checker | Circuit breaker |
+Health checks and circuit breakers are separate mechanisms that work together to prevent traffic from being sent to unavailable backends.
+
+| Property | Health Checker | Circuit Breaker |
 |---|---|---|
-| Kind | Active: probes `GET /health` itself | Passive: watches real client requests |
-| Trigger | 3 failed checks in a row (every 2 s, 2 s timeout) | 3 failed requests in a row |
-| Effect | Backend marked DOWN | Circuit OPEN for 10 s, then one trial request |
-| Recovery | 2 successful checks in a row | The trial request succeeds |
-| Works without traffic | Yes | No, it needs requests |
+| Type | Active monitoring | Passive monitoring |
+| How it works | Periodically sends `GET /health` requests | Observes failures during client requests |
+| Trigger | Three consecutive failed checks | Three consecutive failed requests |
+| Effect | Marks the backend DOWN | Opens the circuit for 10 seconds |
+| Recovery | Two consecutive successful checks | A successful trial request after the cooldown |
+| Works without client traffic | Yes | No |
 
-They write different fields (`healthy` and the breaker state) and meet in one
-place: `Backend.routable()`. A stopped backend is usually noticed first by the
-circuit breaker (after three requests); a hung backend is slower to notice
-because every failed attempt costs a read timeout.
+The health checker updates the backend's health state, while the circuit breaker maintains its own state. These conditions are combined by `Backend.routable()`.
 
-## What happens when something fails
+A stopped backend can trigger the circuit breaker after repeated client-request failures. The health checker independently marks the backend DOWN after consecutive failed probes.
 
-| Situation | What Vantora does | What the client sees |
+## Failure Handling
+
+| Situation | Vantora's Response | Expected Client Result |
 |---|---|---|
-| Backend stopped (connection refused) | Fails over immediately; circuit opens after 3 failures; health checker marks it DOWN after about 6 s | 200 from another backend |
-| Backend hung (accepts, never answers) | Waits one read timeout per attempt, then fails over; circuit opens after 3 failures | 200 from another backend, after a delay |
-| Backend slow but healthy (within the read timeout) | Waits, no retry, no failure | 200 |
-| Backend answers 5xx | Counts a failure (breaker and error count); returns the answer, does not retry | The 5xx |
-| All backends unavailable | Nothing to try | 503 |
-| Every backend times out, or the deadline runs out | Stops trying | 504 |
-| Client disconnects while the response is written | Logged; not retried; not blamed on the backend | – |
-| A stopped backend returns | Two good health checks, cooldown passes, trial request succeeds | Traffic resumes |
+| Backend is stopped or refuses a connection | Attempts another eligible backend and records the failure | HTTP 200 if another backend responds successfully |
+| Backend accepts a connection but does not respond | Waits for the configured timeout, then attempts failover when permitted | HTTP 200 if another backend responds within the deadline |
+| Backend is slow but responds within the timeout | Waits for the response without retrying | HTTP 200 |
+| Backend returns a 5xx response | Records the failure for statistics and circuit-breaker purposes; returns the backend response | Original 5xx response |
+| All backends are unavailable | Stops routing attempts | HTTP 503 |
+| Attempts time out or the request deadline expires | Stops trying after the available time budget is exhausted | HTTP 504 |
+| Client disconnects during response delivery | Logs the disconnect and does not retry the completed backend request | Connection ends |
+| A stopped backend returns | Health checks and circuit-breaker recovery permit traffic to resume | Successful responses once the backend becomes routable |
 
-## Test strategy
+## Test Strategy
 
-Run everything from the project root:
+Run the automated tests from the project root:
 
 ```bash
-python3 -m unittest discover -s tests -v
+.venv/bin/python -m unittest discover -s tests -v
 ```
 
-**Last recorded result:** `Ran 107 tests ... OK` (12 October 2026, Python 3.12,
-with Flask, PyYAML and scapy installed so that no test was skipped). Run it on
-your own computer and record your own result before submitting.
+### Latest Verified Test Results
 
-| Layer | Files | What it checks |
+**Test date:** 13 October 2026
+
+**Environment:** Project virtual environment (`.venv`)
+
+**Command:** `.venv/bin/python -m unittest discover -s tests -v`
+
+**Result:** `Ran 111 tests in 5.924s — OK`
+
+All 111 tests passed with no failures or skipped tests in the recorded run.
+
+### Runtime Verification
+
+On 13 October 2026, the Docker deployment was checked using `docker compose ps`. All five services reported healthy:
+
+| Service | Port | Verified Status |
+|---|---:|---|
+| Backend 1 | 9001 | Healthy |
+| Backend 2 | 9002 | Healthy |
+| Backend 3 | 9003 | Healthy |
+| Load balancer | 8080 | Healthy |
+| Monitoring dashboard | 5050 | Healthy |
+
+Additional HTTP checks confirmed that the load balancer returned HTTP 200 and the dashboard returned HTTP 200. The `/stats` endpoint showed all three backends UP, with their circuit breakers CLOSED, during that check.
+
+These results document the observed test and runtime verification runs. They do not imply that every possible workload or failure condition has been tested.
+
+### Test Coverage
+
+| Layer | Test Files | What They Check |
 |---|---|---|
-| Unit | `test_circuit_breaker.py` (18), `test_routing_algorithms.py` (14), `test_backend_health.py` (6) | The state machine with a fake clock (full recovery cycle, cooldown, probe limits, concurrency, late results), the algorithms and exclusion of unhealthy or open-circuit backends, the health-state thresholds |
-| Integration, real load balancer | `test_failover.py` (8), `test_slow_requests.py` (16), `test_mixed_workload.py` (7) | The real request handler in front of fake backends on free ports: failover, circuit open and recovery, slow and hung backends, timeouts, the retry policy, 502/503/504, a client disconnecting, normal and slow requests together, statistics under concurrency |
-| Components | `test_dashboard.py` (12), `test_backend_app.py` (5) | The dashboard's API and configuration (debugger off by default, no hardcoded address, clear errors), the backend's `/slow?ms=` handling |
-| Configuration and evidence | `test_compose_config.py` (11), `test_benchmark_report.py` (3), `test_wireshark_tools.py` (7) | `docker-compose.yml` consistency (service names, ports, health checks, no `localhost` between containers), the benchmark report against its CSV files, the traffic generator and capture analyzer |
+| Unit tests | `test_circuit_breaker.py`, `test_routing_algorithms.py`, `test_backend_health.py` | Circuit-breaker state transitions, cooldown, trial-request limits, routing algorithms, backend eligibility, and health-state thresholds |
+| Integration tests | `test_failover.py`, `test_slow_requests.py`, `test_mixed_workload.py` | Failover, circuit opening and recovery, slow and hung backends, timeouts, retry policy, HTTP 502/503/504 handling, client disconnects, concurrent workloads, and statistics |
+| Component tests | `test_dashboard.py`, `test_backend_app.py` | Dashboard API and configuration, debugger settings, error handling, backend endpoints, and `/slow?ms=` behavior |
+| Configuration and evidence tests | `test_compose_config.py`, `test_benchmark_report.py`, `test_wireshark_tools.py` | Docker Compose consistency, service names, ports, health checks, benchmark-report consistency with CSV files, traffic generation, and capture analysis |
+| Dashboard assets | `test_dashboard_assets.py` | Dashboard HTML, CSS, and JavaScript asset checks |
 
-How the tests avoid depending on timing (`tests/helpers.py`):
+### Test Design
 
-- **A fake clock** drives circuit-breaker cooldowns, so no test waits for ten
-  seconds to pass.
-- **Gated fake backends** hold a `/slow` response until the test releases it,
-  so "a slow request is in flight" is a state the test controls.
-- **Free ports** (port 0) for every server, and servers are shut down with
-  `addCleanup()`, so nothing clashes with a running Vantora and cleanup
-  happens even when an assertion fails.
-- **Patched timeouts** (a fraction of a second) run the timeout paths quickly.
-  A few tests include a short real wait (for example 0.3 s) only to make a
-  "has not failed yet" assertion stronger; a slow computer makes those
-  assertions easier to pass, not harder.
-- The health-check thread is never started in tests; health results are fed
-  in directly.
+The test suite uses several techniques to reduce flaky timing behavior:
 
-How the tests were checked: the important behaviours were verified by
-deliberately breaking the code (for example removing the deadline, retrying
-unsafe requests, reverting the read timeout to 3 s, putting the debugger back
-on, editing the report) and confirming that tests fail. All 15 such changes
-were caught, and the test for a client disconnecting fails on the original
-code. This was a one-off check, not something the suite does by itself.
+- **Fake clock:** Circuit-breaker cooldowns can be tested without waiting for the full cooldown period.
+- **Gated fake backends:** Tests control when a slow response is released, making it possible to test requests that remain in flight.
+- **Free ports:** Test servers bind to available ports to avoid conflicts with the running application.
+- **Cleanup hooks:** Servers are shut down even when assertions fail.
+- **Shortened timeouts:** Timeout behavior is tested quickly without waiting for the production timeout duration.
+- **Controlled health state:** Health-check outcomes are injected directly into relevant tests instead of depending on the real background health-check thread.
 
-### Not covered by automated tests
+Important behaviors were also checked by deliberately introducing selected faults and verifying that the tests detected them. This was a one-time validation exercise rather than an automatic part of every test run.
 
-- **The health-check loop's timing.** The rules (3 failures, 2 successes) are
-  tested; the loop that runs them every 2 seconds is not.
-- **Docker at runtime.** `docker-compose.yml` is checked statically only.
-  Start the stack yourself and check `docker compose ps`.
-- **The dashboard in a browser.** The server side is tested; the JavaScript was
-  only syntax-checked, so check the page visually (see the checklist).
-- **A hung backend with the default 10 s timeout.** Tested with shortened
-  timeouts. Measured by hand: with a frozen backend each affected request took
-  10.0 s with the defaults and 2.0 s with `VANTORA_READ_TIMEOUT=2`.
-- **Packet captures.** The tools are tested; recording the captures is manual.
-- **Heavy load.** That is what the Locust benchmark is for.
-- **Python 3.9.** Syntax compatibility was checked, but the suite was run on
-  Python 3.12.
+## Limitations of Automated Testing
+
+- **Health-check timing:** The health-state thresholds are tested, but the timing behavior of the complete background health-check loop is not fully covered by automated tests.
+- **Docker runtime:** Automated tests validate the Docker Compose configuration but do not fully test container behavior. Manual verification on 13 October 2026 confirmed that all five services were healthy.
+- **Dashboard browser behavior:** Server-side dashboard behavior and asset checks are covered by tests. Visual appearance and interactive behavior should also be checked manually in a browser.
+- **Default hung-backend timeout:** Hung-backend behavior is tested with shortened timeouts. A manual measurement with a frozen backend previously recorded approximately 10 seconds using the default read timeout and 2 seconds with `VANTORA_READ_TIMEOUT=2`.
+- **Packet captures:** Capture-generation and analysis tools are tested, but recording packet captures is a manual activity.
+- **Heavy load:** The Locust benchmark provides a limited performance evaluation. It does not establish production-scale capacity.
+- **Python versions:** Python 3.9 syntax compatibility was previously checked. The latest 111-test result recorded here was run in the project's `.venv`; confirm the exact Python version with `.venv/bin/python --version` if it must be specified in the submission report.
+
+## Performance Evaluation
+
+The project includes Locust benchmark data for Round Robin, Weighted Round Robin, and Least Connections under the same general workload.
+
+The results include throughput, response-time comparisons, request outcomes, and raw CSV data in `docs/load-testing/`.
+
+The benchmark is limited to one recorded run per algorithm on a single computer with identical backend configurations. It should be presented as an experimental observation, not as proof that one algorithm is universally faster or better than the others.
+
+Least Connections is expected to be most informative when requests overlap in time. With sequential, short requests, the first backend can repeatedly have the lowest active-connection count, so the workload must be considered when interpreting its results.
+
+## Wireshark Evidence
+
+The `docs/wireshark/` directory contains packet captures for:
+
+- Round Robin distribution
+- Weighted Round Robin distribution
+- Concurrent Least Connections traffic
+- Failover while Backend 9002 is down
+- Recovery after Backend 9002 returns
+
+These captures support analysis of request distribution, separate client-to-load-balancer and load-balancer-to-backend connections, and failure/recovery behavior.
+
+Docker Desktop's internal container traffic is not necessarily visible directly on the host's network interface. The capture environment and method should therefore be stated accurately when discussing the evidence.
+
+## Conclusion
+
+Vantora demonstrates HTTP reverse-proxy load balancing across three backend servers using Round Robin, Weighted Round Robin, and Least Connections. It includes backend health monitoring, circuit breaking, retry and failover behavior, a monitoring dashboard, automated tests, load-testing artifacts, and packet-capture evidence.
+
+The latest recorded verification includes 111 passing automated tests, successful HTTP checks for the load balancer and dashboard, and five healthy Docker services. The documented benchmark and test limitations should be considered when interpreting the results.
