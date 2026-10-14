@@ -1,424 +1,632 @@
-# Vantora: Dynamic Load Balancer and Health Monitor
+# Vantora — Dynamic Load Balancer
 
-Vantora is an HTTP reverse-proxy load balancer written in Python, with three
-backend servers and a live monitoring dashboard. It distributes requests with
-a choice of routing algorithms, watches the health of every backend, keeps
-serving clients when a backend fails, and shows what is happening in a web
-dashboard.
-
+A Python-based HTTP reverse proxy that distributes incoming requests across multiple backend servers using Round Robin, Weighted Round Robin, and Least Connections. It includes health monitoring, circuit breakers, automatic failover, request statistics, a live dashboard, Docker Compose support, automated tests, load-testing benchmarks, and Wireshark traffic evidence.
 
 ## Contents
 
 - [Features](#features)
 - [Architecture](#architecture)
-- [Ports](#ports)
+- [Ports and Services](#ports-and-services)
 - [Prerequisites](#prerequisites)
-- [Quick start with Docker](#quick-start-with-docker)
-- [Run without Docker](#run-without-docker)
-- [Using the load balancer](#using-the-load-balancer)
-- [Endpoints](#endpoints)
-- [How it works](#how-it-works)
+- [Quick Start with Docker](#quick-start-with-docker)
+- [Run Without Docker](#run-without-docker)
+- [Using the Load Balancer](#using-the-load-balancer)
+- [API Endpoints](#api-endpoints)
+- [How It Works](#how-it-works)
 - [Configuration](#configuration)
-- [The dashboard](#the-dashboard)
+- [Dashboard](#dashboard)
 - [Tests](#tests)
-- [Load testing](#load-testing)
-- [Wireshark evidence](#wireshark-evidence)
-- [Project layout](#project-layout)
-- [Known limitations](#known-limitations)
+- [Load Testing](#load-testing)
+- [Wireshark Evidence](#wireshark-evidence)
+- [Project Structure](#project-structure)
+- [Known Limitations](#known-limitations)
 - [Troubleshooting](#troubleshooting)
-- [More documentation](#more-documentation)
+- [Project Team and Academic Details](#project-team-and-academic-details)
 
 ## Features
 
-- **Three routing algorithms:** Round Robin, Weighted Round Robin and Least
-  Connections, switchable while the system is running.
-- **Health monitoring:** a background thread checks every backend every two
-  seconds. Three failed checks in a row mark a backend DOWN; two successful
-  checks in a row bring it back UP.
-- **Retry and failover:** if a backend cannot answer, the request is repeated
-  on another healthy backend, and only when repeating it is safe.
-- **Circuit breaker per backend:** after three consecutive failed requests a
-  backend is taken out of rotation for ten seconds, then tested with a single
-  trial request (CLOSED, OPEN and HALF_OPEN states).
-- **Timeouts that allow slow requests:** a short connect timeout for fast
-  failover and a longer read timeout so slow but healthy responses succeed.
-- **Statistics API:** requests, active connections, errors, average response
-  time, health and circuit state for every backend.
-- **Monitoring dashboard:** status verdict, topology, per-backend table,
-  traffic and latency charts, health and circuit events, and an algorithm
-  selector.
-- **Docker Compose:** one command starts the backends, the load balancer and
-  the dashboard.
-- **Automated tests, a load-test report and packet-capture tools.**
+- **Multiple routing algorithms:** Round Robin, Weighted Round Robin, and Least Connections.
+- **Health monitoring:** Periodically checks backend availability and tracks consecutive failures and successes.
+- **Automatic failover:** Avoids unavailable backends and retries eligible requests.
+- **Circuit breaker:** Uses CLOSED, OPEN, and HALF_OPEN states to prevent repeated requests to failing backends.
+- **Request statistics:** Tracks request counts, errors, backend distribution, and health status.
+- **Live dashboard:** Displays backend health, routing configuration, request statistics, and distribution charts.
+- **Docker Compose:** Runs the load balancer, dashboard, and three backend services.
+- **Automated tests:** Includes unit and integration-oriented tests for routing, health monitoring, failover, and reporting.
+- **Load-testing benchmarks:** Compares routing algorithms using Locust and records results in CSV files and graphs.
+- **Wireshark evidence:** Includes packet captures for routing distribution, concurrent requests, backend failure, and recovery.
 
 ## Architecture
 
+The project contains five services.
+
 ```text
-                       +-----------------------------+
-   Browser  ---------> |  Dashboard (Flask)  :5050   |
-                       +--------------+--------------+
-                                      | /api/stats, /api/algorithm
-                                      v
-   Client  --HTTP-->   +-----------------------------+
-   (curl, Locust)      |  Load balancer      :8080   |
-                       |   - routing algorithms      |
-                       |   - health checker thread   |
-                       |   - circuit breaker/backend |
-                       |   - retry and failover      |
-                       +-----+-------+-------+-------+
-                             |       |       |
-                             v       v       v
-                        Backend   Backend   Backend
-                         :9001     :9002     :9003
-                       (Flask)    (Flask)    (Flask)
+                    Clients / Browser
+                           |
+                           v
+                  +------------------+
+                  |  Load Balancer   |
+                  |    Port 8080     |
+                  +------------------+
+                    /      |      \
+                   /       |       \
+                  v        v        v
+             Backend 1  Backend 2  Backend 3
+              :9001      :9002      :9003
+
+                  +------------------+
+                  |    Dashboard     |
+                  |    Port 5050     |
+                  +------------------+
 ```
 
-The dashboard is a separate server. The browser talks only to the dashboard,
-and the dashboard forwards two requests to the load balancer (`GET /stats` and
-`POST /algorithm`). A request through the load balancer goes: client, load
-balancer, one backend, and back. The load balancer opens its own connection to
-the backend, adds an `X-Served-By` header to the answer, and returns it.
+The dashboard communicates with the load balancer to retrieve statistics and change the routing algorithm. Client requests are forwarded by the load balancer to a selected healthy backend.
 
-See [docs/architecture-and-testing.md](docs/architecture-and-testing.md) for
-the request lifecycle, the failure-handling rules and the test strategy.
+The load balancer adds an `X-Served-By` response header to identify the backend that served a request.
 
-## Ports
+## Ports and Services
 
-| Component | Port | Notes |
-|---|---|---|
-| Load balancer | 8080 | Clients send requests here |
-| Dashboard | 5050 | Open in a browser |
-| Backend 1, 2, 3 | 9001, 9002, 9003 | Also published by Docker Compose for testing |
+| Service | Port | Purpose |
+|---|---:|---|
+| Load balancer | 8080 | Receives and routes client requests |
+| Dashboard | 5050 | Displays health and traffic statistics |
+| Backend 1 | 9001 | First backend server |
+| Backend 2 | 9002 | Second backend server |
+| Backend 3 | 9003 | Third backend server |
 
 ## Prerequisites
 
-- **Docker Desktop** (for the Docker route), or
-- **Python 3.9 or newer** (for running without Docker; the project was
-  developed on Python 3.9.6 and the Docker images use Python 3.11)
-- Git
-- A web browser. The dashboard charts load Chart.js from a CDN, so they need
-  internet access (the rest of the dashboard works without it).
-- Optional: Wireshark (packet capture) and Locust (load testing).
+For Docker-based execution:
 
-## Quick start with Docker
+- Docker Desktop or Docker Engine
+- Docker Compose
 
-From the project root:
+For running locally without Docker:
 
-```bash
-docker compose up --build
-```
+- Python 3.9 or later
+- The Python dependencies listed in the project requirements files
+- Available ports 5050, 8080, 9001, 9002, and 9003
 
-Then open:
+The local test suite was verified using Python 3.9.6. The Docker load-balancer container was verified using Python 3.11.17.
 
-- Dashboard: <http://localhost:5050>
-- Statistics API: <http://localhost:8080/stats>
-- A proxied request: <http://localhost:8080/>
+## Quick Start with Docker
 
-Useful commands:
+### 1. Clone the repository
 
 ```bash
-docker compose ps          # all five services should become "healthy"
-docker compose logs -f     # live logs
-docker compose down        # stop and remove the containers
+git clone https://github.com/sharmanayna025-crypto/Vantora.git
+cd Vantora
 ```
 
-Inside Compose the services find each other by service name
-(`backend-9001`, `load-balancer`, ...). The load balancer is given its
-backends through `VANTORA_BACKEND_HOSTS`, and the dashboard is given the load
-balancer through `LB_URL`; both are set in `docker-compose.yml`.
-
-To demonstrate failover with Docker:
+### 2. Start the services
 
 ```bash
-docker compose stop backend-9002      # take a backend away
-docker compose start backend-9002     # bring it back
+docker compose up --build -d
 ```
 
-## Run without Docker
-
-Create a virtual environment and install the dependencies (once):
+### 3. Check service status
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate              # Windows: venv\Scripts\activate
-pip install -r requirements-dev.txt
+docker compose ps
 ```
 
-(`pip install Flask==3.1.3` is enough to run the application; the other
-packages are for tests, graphs, captures and load testing.)
+All five services should become healthy.
 
-Start each component in its own terminal, from the project root, with the
-virtual environment active:
+### 4. Open the dashboard
+
+Open the following URL in your browser:
+
+http://localhost:5050
+
+### 5. Send a request through the load balancer
+
+```bash
+curl -i http://localhost:8080/
+```
+
+The response should identify the backend that handled the request.
+
+### 6. View statistics
+
+```bash
+curl http://localhost:8080/stats
+```
+
+### 7. Stop the services
+
+```bash
+docker compose down
+```
+
+To stop the services and remove the containers, use `docker compose down`. Persistent files and images are not necessarily removed by this command.
+
+## Run Without Docker
+
+Running manually is an alternative to the Docker setup. **Do not run the manual servers while Docker is already publishing the same ports.**
+
+### 1. Stop the Docker stack
+
+```bash
+docker compose down
+```
+
+Ensure ports 5050, 8080, and 9001–9003 are available.
+
+### 2. Create and activate a virtual environment
+
+On macOS or Linux:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+### 3. Install the dependencies
+
+Install the dependencies specified by the repository's requirements files. For example, if a root `requirements.txt` exists:
+
+```bash
+pip install -r requirements.txt
+```
+
+If the project has separate requirements files for the backend, load balancer, or dashboard, install the dependencies required by each component.
+
+### 4. Start the backend servers
+
+Open separate terminal windows from the project root and activate the virtual environment in each terminal.
+
+Terminal 1:
 
 ```bash
 python backend/app.py 9001
+```
+
+Terminal 2:
+
+```bash
 python backend/app.py 9002
+```
+
+Terminal 3:
+
+```bash
 python backend/app.py 9003
+```
+
+### 5. Start the load balancer
+
+In another terminal:
+
+```bash
 python lb/balancer.py
+```
+
+### 6. Start the dashboard
+
+In another terminal:
+
+```bash
 python dashboard/app.py
 ```
 
-Without any settings, the load balancer talks to the backends on
-`127.0.0.1`, and the dashboard talks to the load balancer at
-`http://127.0.0.1:8080`. The dashboard listens on this computer only.
+Open http://localhost:5050 to view the dashboard.
 
-## Using the load balancer
+**Note:** These commands assume the entry-point files and argument formats match the current repository. If you encounter a missing-file or missing-dependency error, check the corresponding component's instructions and requirements.
+
+## Using the Load Balancer
+
+Once the services are running, send requests to port 8080:
 
 ```bash
-# A proxied request. The X-Served-By header says which backend answered.
 curl -i http://localhost:8080/
-
-# Statistics (JSON)
-curl http://localhost:8080/stats
-
-# Switch the routing algorithm
-curl -X POST http://localhost:8080/algorithm \
-     -H "Content-Type: application/json" \
-     -d '{"algorithm": "Round Robin"}'
-
-# A slow request (the backend waits 1000 ms before answering)
-curl "http://localhost:8080/slow?ms=1000"
 ```
 
-The algorithm names are exactly `Round Robin`, `Weighted Round Robin` and
-`Least Connections`. The load balancer starts with `Least Connections`.
+Send multiple requests to observe the selected backend:
 
-## Endpoints
+```bash
+for i in $(seq 1 10); do
+  curl -s -i http://localhost:8080/ | grep -i "X-Served-By"
+done
+```
 
-**Load balancer (port 8080)**
+The exact distribution depends on the selected algorithm, backend health, and whether requests overlap in time.
 
-| Method and path | Purpose |
-|---|---|
-| `GET /stats` | Algorithm and per-backend statistics (JSON) |
-| `POST /algorithm` | Change the algorithm; body `{"algorithm": "<name>"}`. Returns 400 for an unknown name |
-| `GET <anything else>` | Proxied to a backend |
+### Changing the routing algorithm
 
-Other methods are not proxied (see [Known limitations](#known-limitations)).
-The load balancer answers with **503** when no backend is available, **504**
-when the backends timed out, and **502** when a request that is not safe to
-repeat failed after it had been sent.
+Use the dashboard to select a routing algorithm. The dashboard sends the change to the load balancer through the algorithm configuration endpoint.
 
-**Backend (ports 9001 to 9003)**
+The available algorithms are:
 
-| Path | Purpose |
-|---|---|
-| `GET /` | Identifies the server (name and port) |
-| `GET /health` | Health check, always answers 200 |
-| `GET /slow` | Waits 5 seconds by default; `?ms=<0 to 30000>` sets the delay |
+- Round Robin
+- Weighted Round Robin
+- Least Connections
 
-**Dashboard (port 5050)**
+## API Endpoints
 
-| Path | Purpose |
-|---|---|
-| `GET /` | The dashboard page |
-| `GET /api/stats` | Forwards to the load balancer's `/stats` |
-| `POST /api/algorithm` | Forwards to the load balancer's `/algorithm` |
-| `GET /healthz` | Dashboard health (does not need the load balancer) |
-
-If the load balancer cannot be reached, the dashboard's API answers with
-**502** and a message naming the address it tried.
-
-## How it works
-
-**Routing algorithms**
-
-- *Round Robin*: backends take turns.
-- *Weighted Round Robin*: backends take turns in proportion to their weights.
-  The weights are 3, 2 and 1 for ports 9001, 9002 and 9003 (set in
-  `lb/balancer.py`), so 30 requests split 15 / 10 / 5.
-- *Least Connections*: the backend with the fewest active connections wins.
-  Ties go to the first backend, so requests that arrive one at a time all go
-  to Backend-9001. Traffic spreads only when requests overlap.
-
-Only backends that are healthy **and** whose circuit allows traffic are
-candidates.
-
-**Health monitoring.** Every 2 seconds the load balancer requests
-`GET /health` from each backend (2 second timeout). Three consecutive failures
-mark it DOWN; two consecutive successes mark it UP again.
-
-**Circuit breaker.** Separate from health checks, it reacts to real client
-requests. Three consecutive failed requests (connection errors, timeouts, or
-HTTP 5xx answers) open the circuit. After 10 seconds one trial request is let
-through (HALF_OPEN): success closes the circuit, failure reopens it.
-
-**Timeouts, retry and failover.**
-
-| Setting | Default | Meaning |
+| Endpoint | Method | Purpose |
 |---|---|---|
-| Connect timeout | 1 s | Time allowed to open a connection to a backend |
-| Read timeout | 10 s | Time allowed for the backend's response (longer than `/slow`'s 5 s) |
-| Request deadline | 20 s | Total time for one client request across all attempts |
+| `/` | GET | Sends a request through the load balancer |
+| `/stats` | GET | Returns load-balancer statistics |
+| `/algorithm` | POST | Changes the active routing algorithm |
 
-A failed attempt is retried on another backend only when that is safe: always
-if the request never reached the backend, and after it was sent only for
-methods that are safe to repeat (GET, HEAD, OPTIONS). Once any backend has
-answered, even with an error, the answer is returned and the request is not
-repeated.
+The root endpoint and statistics endpoint are intended for direct testing. Other paths and HTTP methods depend on the implemented proxy and route handling.
 
-Note that a backend that accepts connections but never answers (a hung
-process) costs one full read timeout for each request that lands on it, until
-its circuit opens after three failures. A stopped backend is different: the
-connection is refused at once and failover is immediate. For demonstrations of
-a hung backend you can shorten the wait, for example
-`VANTORA_READ_TIMEOUT=2 python lb/balancer.py`.
+Example:
+
+```bash
+curl -i http://localhost:8080/
+```
+
+Retrieve statistics:
+
+```bash
+curl -s http://localhost:8080/stats
+```
+
+The `/algorithm` endpoint is used by the dashboard to change the routing strategy. Consult the implementation for the accepted request-body format.
+
+## How It Works
+
+### 1. Round Robin
+
+Round Robin selects healthy backends sequentially and cycles through the available servers.
+
+For three healthy backends, requests follow a sequence similar to:
+
+```text
+Request 1  -> Backend 1
+Request 2  -> Backend 2
+Request 3  -> Backend 3
+Request 4  -> Backend 1
+```
+
+With 30 sequential requests and all backends healthy, the expected distribution is 10 requests per backend.
+
+### 2. Weighted Round Robin
+
+Weighted Round Robin assigns a different weight to each backend.
+
+The configured weights are:
+
+| Backend | Port | Weight |
+|---|---:|---:|
+| Backend 1 | 9001 | 3 |
+| Backend 2 | 9002 | 2 |
+| Backend 3 | 9003 | 1 |
+
+The expected allocation ratio is 3:2:1.
+
+For 30 requests, the expected distribution is:
+
+- Backend 1: 15 requests
+- Backend 2: 10 requests
+- Backend 3: 5 requests
+
+Actual results can vary when backends become unhealthy or the configuration changes.
+
+### 3. Least Connections
+
+Least Connections selects the eligible backend with the fewest active connections.
+
+This algorithm is most meaningful when requests overlap in time or remain active for different durations. When requests are sent sequentially and each completes before the next begins, all backends may have zero active connections at selection time. In that situation, tie-breaking can cause traffic to favor the first backend.
+
+### 4. Health Monitoring
+
+The load balancer periodically checks the health of each backend.
+
+The configured behavior is:
+
+- Health-check interval: 2 seconds
+- Health-check timeout: 2 seconds
+- Three consecutive failures: backend marked DOWN
+- Two consecutive successes: backend marked UP
+
+Unavailable backends are excluded from normal routing until they recover according to the health-check logic.
+
+### 5. Circuit Breaker
+
+The circuit breaker protects the system from repeatedly sending requests to a failing backend.
+
+It uses three states:
+
+| State | Behavior |
+|---|---|
+| CLOSED | Requests can be sent normally |
+| OPEN | Requests to the failing backend are blocked temporarily |
+| HALF_OPEN | A limited probe checks whether the backend has recovered |
+
+The configured circuit-breaker behavior opens the circuit after three consecutive failed client requests and uses a 10-second cooldown before allowing a half-open probe.
+
+### 6. Retry and Failover
+
+When a backend fails, the load balancer can retry eligible requests against another healthy backend.
+
+Retries must be handled carefully because repeating a request can duplicate its effects. The implementation limits retry behavior to eligible requests and does not assume that every failure is safe to retry.
+
+The load balancer also applies connection, read, and overall request deadlines.
 
 ## Configuration
 
-Environment variables (all optional):
+The following environment variables are supported by the relevant components:
 
-| Variable | Used by | Default | Meaning |
-|---|---|---|---|
-| `VANTORA_BACKEND_HOSTS` | load balancer | `127.0.0.1,127.0.0.1,127.0.0.1` | Exactly three hosts, for ports 9001, 9002, 9003 |
-| `VANTORA_CONNECT_TIMEOUT` | load balancer | `1.0` | Seconds |
-| `VANTORA_READ_TIMEOUT` | load balancer | `10.0` | Seconds |
-| `VANTORA_REQUEST_DEADLINE` | load balancer | `20.0` | Seconds |
-| `LB_URL` | dashboard | `http://127.0.0.1:8080` | Where the dashboard server finds the load balancer. In Docker use the service name: `http://load-balancer:8080` |
-| `LB_TIMEOUT` | dashboard | `3` | Seconds to wait for the load balancer |
-| `DASHBOARD_HOST` | dashboard | `127.0.0.1` | Interface to listen on (`0.0.0.0` in Docker) |
-| `DASHBOARD_PORT` | dashboard | `5050` | Port |
-| `DASHBOARD_DEBUG` | dashboard | off | `1` enables Flask's debugger, and only when the host is a loopback address |
+| Variable | Purpose |
+|---|---|
+| `VANTORA_BACKEND_HOSTS` | Configures backend hosts |
+| `VANTORA_CONNECT_TIMEOUT` | Configures connection timeout |
+| `VANTORA_READ_TIMEOUT` | Configures read timeout |
+| `VANTORA_REQUEST_DEADLINE` | Configures the overall request deadline |
+| `LB_URL` | Configures the load-balancer URL used by the dashboard |
+| `LB_TIMEOUT` | Configures the dashboard's load-balancer request timeout |
+| `DASHBOARD_HOST` | Configures the dashboard bind address |
+| `DASHBOARD_PORT` | Configures the dashboard port |
+| `DASHBOARD_DEBUG` | Configures the dashboard debug setting |
 
-Fixed in the source code (edit the file to change them): the ports,
-the weights (`lb/balancer.py`), the health-check interval and thresholds
-(`lb/balancer.py`, `lb/algorithms.py`) and the circuit-breaker settings
-(`lb/algorithms.py`).
+Default timeout values:
 
-## The dashboard
+- Connection timeout: 1 second
+- Read timeout: 10 seconds
+- Overall request deadline: 20 seconds
 
-Open <http://localhost:5050>. It shows an overall status message, request,
-connection, error and latency figures, the load balancer and the three
-backends with live traffic, a table with each backend's status, circuit state,
-requests, errors and latency, traffic and latency charts, and a list of recent
-events (a backend going DOWN or recovering, circuit changes, algorithm
-changes). The algorithm can be changed from the selector at the top.
+Use environment variables to override defaults where supported. Refer to the relevant implementation files for accepted formats and fallback behavior.
 
-It refreshes every 2 seconds. If something is wrong it says what: "Load
-balancer unavailable" with the address that could not be reached, or
-"Dashboard server unreachable" if the dashboard server itself has stopped.
+## Dashboard
+
+The dashboard is available at:
+
+http://localhost:5050
+
+It provides a visual interface for monitoring the load balancer.
+
+The dashboard includes:
+
+- Active routing algorithm
+- Backend health information
+- Request and error statistics
+- Backend request distribution
+- Controls for changing the routing algorithm
+- Traffic-distribution charts
+
+The dashboard communicates with the load balancer for statistics and configuration changes. Chart rendering uses Chart.js from a CDN, so chart assets may require an internet connection.
 
 ## Tests
 
-Run the whole suite from the project root:
+The project contains automated tests covering the implemented routing, backend health, circuit-breaker, retry/failover, and reporting behavior.
+
+Run the full test suite from the project root:
 
 ```bash
-python3 -m unittest discover -s tests -v
+.venv/bin/python -m unittest discover -s tests -v
 ```
 
-The test count and last recorded result are in
-[docs/architecture-and-testing.md](docs/architecture-and-testing.md). The tests
-need no running services and no Docker; they start their own servers on free
-ports. A few groups are skipped automatically if an optional package is
-missing (`Flask`, `PyYAML`, `scapy`); `pip install -r requirements-dev.txt`
-installs them all.
-
-What is covered: the circuit breaker (with a fake clock), the routing
-algorithms, the health-state rules, failover, slow and hung backends, mixed
-fast/slow workloads, the dashboard's API, the backend endpoints, the
-benchmark report against its raw data, the Compose file's consistency, and the
-Wireshark tools. What is not covered, and why, is listed in the
-architecture and testing document.
-
-## Load testing
-
-The recorded benchmark used Locust 2.34.0 with 20 users for 60 seconds per
-algorithm. The results, graphs and raw CSV files are in
-[docs/load-testing/](docs/load-testing/); start with
-[benchmark-comparison.md](docs/load-testing/benchmark-comparison.md). The
-report's table is checked against the CSV files by an automated test.
-
-To run a benchmark yourself (Vantora must be running):
+Run the benchmark-report consistency tests separately:
 
 ```bash
-locust -f locustfile_benchmark.py --headless -u 20 -r 5 -t 60s \
-       --host http://127.0.0.1:8080 --csv docs/load-testing/benchmark-runs/my-run
+.venv/bin/python -m unittest tests.test_benchmark_report -v
 ```
 
-To regenerate the graphs and the results table from the CSV files:
+### Latest verified test run
 
-```bash
-python3 docs/load-testing/generate_graphs.py
-```
+**Verification date: 14 October 2026**
 
-Read the benchmark as an observation, not a ranking: it is one run per
-algorithm, against identical backends, on one computer.
+- Full suite: 111 tests passed
+- Failures: 0
+- Errors: 0
+- Local test environment: Python 3.9.6
+- Docker load-balancer environment: Python 3.11.17
+- Docker Compose services: five services reported healthy during verification
+- Benchmark-report consistency tests: three tests passed
 
-## Wireshark evidence
+These results describe the environments actually tested. They do not establish compatibility with every Python version or every operating system.
 
-Five packet captures in `docs/wireshark/` demonstrate request distribution, failover, and recovery:
+See [`docs/architecture-and-testing.md`](docs/architecture-and-testing.md) for additional architecture and test documentation.
 
-| Capture | Scenario | Expected result |
-|---|---|---|
-| `round-robin-distribution.pcapng` | 30 requests using Round Robin | 10 requests per backend |
-| `weighted-distribution.pcapng` | 30 requests using Weighted Round Robin | 15, 10, and 5 requests across backends 9001, 9002, and 9003 |
-| `least-connections-concurrent.pcapng` | 18 concurrent requests using Least Connections | 6 requests per backend in the recorded test |
-| `failover-backend-9002-down.pcapng` | Backend 9002 stopped | Requests continue through backends 9001 and 9003 |
-| `recovery-backend-9002.pcapng` | Backend 9002 restored | All three backends receive requests again |
+## Load Testing
 
-See [`docs/wireshark/README.md`](docs/wireshark/README.md) for capture procedures, filters, and further details. Captures were collected using the non-Docker setup because Docker Desktop's internal network traffic may not be directly visible to Wireshark on the host.
+The project includes Locust-based load-testing experiments for comparing the routing algorithms.
 
-## Project layout
+The recorded experiments use:
+
+- 20 simulated users
+- 60 seconds per algorithm
+- Round Robin
+- Weighted Round Robin
+- Least Connections
+
+The results are stored in `docs/load-testing/`.
+
+Important files include:
+
+- `docs/load-testing/benchmark-comparison.md`
+- The recorded benchmark CSV files
+- The generated performance graphs
+
+The benchmark-report consistency tests verify that the report, graph files, and raw CSV results agree with one another.
+
+Load-testing results depend on the machine, request workload, backend response times, and execution environment. They should be interpreted as measurements of the recorded test setup rather than universal performance guarantees.
+
+## Wireshark Evidence
+
+The repository contains packet captures and supporting analysis for demonstrating the behavior of the load balancer.
+
+Evidence is stored in `docs/wireshark/`.
+
+| Evidence file | Purpose |
+|---|---|
+| `round-robin-distribution.pcapng` | Round Robin traffic distribution |
+| `weighted-distribution.pcapng` | Weighted Round Robin traffic distribution |
+| `least-connections-concurrent.pcapng` | Concurrent Least Connections traffic |
+| `failover-backend-9002-down.pcapng` | Traffic while backend 9002 is stopped |
+| `recovery-backend-9002.pcapng` | Traffic after backend 9002 recovers |
+| `load-balancer-to-backends.pcap` | Load-balancer-to-backend traffic |
+| `backend-traffic-evidence.png` | Screenshot supporting the packet-capture evidence |
+
+Additional files include:
+
+- `docs/wireshark/README.md`
+- `docs/wireshark/analyze_capture.py`
+- `docs/wireshark/generate_traffic.py`
+
+The expected results for the recorded scenarios are:
+
+- **Round Robin:** approximately equal distribution across three healthy backends.
+- **Weighted Round Robin:** traffic following the configured 3:2:1 weight ratio.
+- **Least Connections:** distribution influenced by concurrent active connections and tie-breaking.
+- **Failover:** requests avoid backend 9002 while it is unavailable.
+- **Recovery:** backend 9002 becomes eligible again after successful health checks.
+
+The captures were generated in a local non-Docker setup because Docker Desktop's internal network traffic is not necessarily visible directly on the host's loopback interface.
+
+Wireshark filters can help isolate traffic to the load balancer and the backend ports. For example:
 
 ```text
-backend/            Backend server (Flask), Dockerfile
-lb/                 Load balancer: balancer.py, algorithms.py,
-                    circuit_breaker.py, Dockerfile
-dashboard/          Dashboard server (app.py), templates/, static/, Dockerfile
-tests/              Automated tests and shared fixtures (helpers.py)
-docs/
-  architecture-and-testing.md   Design and test strategy
-  submission-checklist.md       What to submit, demo script, viva notes
-  load-testing/                 Benchmark report, graphs, raw CSV files
-  wireshark/                    Captures, screenshot, capture tools and guide
-docker-compose.yml  Starts backends, load balancer and dashboard
-locustfile_benchmark.py   Locust workload used for the benchmark
-locustfile.py       Earlier, lighter Locust workload (with think time)
-client-to-load-balancer.pcapng   Existing client-side capture
-requirements-dev.txt   All Python packages used by the project
+tcp.port == 8080
 ```
 
-## Known limitations
+For a particular backend, filter on its port, such as:
 
-| Sr. No. | Limitation | Description |
-|---:|---|---|
-| 1 | HTTP methods | Only GET requests are proxied. Other HTTP methods are not supported, except the dedicated algorithm configuration endpoint. |
-| 2 | Authentication | Authentication is not implemented. Anyone with access to the load balancer or dashboard may be able to change the routing algorithm. |
-| 3 | Single load balancer | If the load balancer stops, request routing becomes unavailable. Statistics and circuit-breaker state are stored in memory and reset on restart. |
-| 4 | Dashboard events | Events are detected by comparing successive polls. The event list is not persistent and resets when the page is refreshed. |
-| 5 | Fixed backend configuration | The system uses three backends on ports 9001, 9002, and 9003. Ports, weights, and circuit-breaker settings are defined in the source code. |
-| 6 | Routing behaviour | Least Connections resolves ties by selecting the first eligible backend. Weighted Round Robin follows the configured backend weights. |
-| 7 | Slow backend detection | A backend that accepts connections but does not respond may take time to be excluded from routing because of request timeouts and circuit-breaker thresholds. |
-| 8 | In-memory statistics | Statistics and circuit-breaker state are not persisted, so historical state is lost when the application restarts. |
-| 9 | Development servers | The backend servers and dashboard use Flask's built-in development server, which is not intended for production deployment. |
-| 10 | Benchmark scope | The recorded benchmark uses one run per algorithm on a single computer with identical backends. Results are workload-dependent and do not establish a universal ranking. |
-| 11 | Python compatibility | Verify the automated tests on the Python version used for submission and deployment. |
-| 12 | Deployment and security | Production use would require additional security, monitoring, and availability measures. |
+```text
+tcp.port == 9002
+```
 
+Use the included README and analysis script for capture-specific instructions.
 
+## Project Structure
+
+```text
+Vantora/
+├── backend/
+│   └── app.py
+├── dashboard/
+│   └── app.py
+├── lb/
+│   ├── balancer.py
+│   └── circuit_breaker.py
+├── tests/
+├── docs/
+│   ├── screenshots/
+│   │   ├── graphs.png
+│   │   ├── health.png
+│   │   └── traffic topology.png
+│   ├── wireshark/
+│   │   ├── README.md
+│   │   ├── analyze_capture.py
+│   │   ├── generate_traffic.py
+│   │   ├── backend-traffic-evidence.png
+│   │   ├── round-robin-distribution.pcapng
+│   │   ├── weighted-distribution.pcapng
+│   │   ├── least-connections-concurrent.pcapng
+│   │   ├── failover-backend-9002-down.pcapng
+│   │   └── recovery-backend-9002.pcapng
+│   ├── architecture-and-testing.md
+│   ├── submission-checklist.md
+│   └── load-testing/
+│       └── benchmark-comparison.md
+├── docker-compose.yml
+├── README.md
+└── client-to-load-balancer.pcapng
+```
+
+The tree highlights the main project components and evidence files. Additional test files, configuration files, benchmark CSVs, and generated graphs may exist in their respective directories.
+
+## Known Limitations
+
+1. **HTTP scope:** The project is an educational HTTP reverse proxy rather than a production-grade general-purpose proxy.
+2. **Request methods:** The implemented proxy supports the routes and methods defined in the code. The `/algorithm` endpoint is used for configuration; arbitrary HTTP method forwarding should not be assumed.
+3. **No authentication:** The dashboard and configuration endpoints do not provide production-grade authentication or authorization.
+4. **Single load balancer:** The application does not provide a highly available cluster of load balancers.
+5. **In-memory statistics:** Statistics may reset when the process restarts and are not a persistent monitoring database.
+6. **Development server:** The Flask-based services are intended for a controlled academic environment, not direct production deployment.
+7. **Benchmark scope:** Recorded load-test results represent the documented test conditions and are not a universal performance guarantee.
+8. **Retry safety:** Retrying requests can be unsafe when an operation has already produced side effects. Retry behavior must account for request semantics.
+9. **Dashboard dependencies:** Chart rendering depends on loading Chart.js from a CDN.
+10. **Network visibility:** Host-side packet capture may not expose all traffic inside Docker's virtual network.
+11. **Python compatibility:** The local test suite was verified with Python 3.9.6, and the Docker load balancer was verified with Python 3.11.17. Other Python versions have not been exhaustively tested.
 
 ## Troubleshooting
 
-| Symptom | Likely cause and fix |
-|---|---|
-| `Address already in use` | Something already uses the port. Stop the old process, or `docker compose down` if the stack is running in Docker. |
-| The load balancer returns 503 straight after starting | Backends are not running, or `VANTORA_BACKEND_HOSTS` names hosts that do not resolve. Local runs need no setting; Docker sets it in `docker-compose.yml`. |
-| `Name or service not known` for `backend-9001` outside Docker | `VANTORA_BACKEND_HOSTS` is set to the Docker names in your shell. Unset it. |
-| Dashboard says "Load balancer unavailable" | The dashboard server cannot reach `LB_URL`. The message includes the address it tried; start the load balancer or correct `LB_URL`. |
-| Dashboard says "Dashboard server unreachable" | The dashboard process has stopped; restart it. |
-| Charts are empty | Chart.js is loaded from the internet; check the connection. |
-| A request takes 10 seconds then succeeds | A backend is hung (accepts connections but does not answer). See [How it works](#how-it-works). |
-| Wireshark shows nothing on the loopback interface | Capture on `lo0` (macOS) or `lo` (Linux), not Wi-Fi; make sure you are running Vantora without Docker. |
+### Port already in use
 
-## Project Team & Academic Details
+If a server reports `Address already in use`, another process is listening on the required port.
 
-Institution: Department of Computer Science and Engineering, MIT World Peace University, Pune
-Course: Computer Networks Laboratory (CSE20110)
-Academic Year: 2026–2027
+Check the port on macOS:
 
-| Sr. No. | PRN | Student Name |
+```bash
+lsof -nP -iTCP:9001 -sTCP:LISTEN
+```
+
+Replace `9001` with the affected port.
+
+If the Docker stack is running, stop it before starting the services manually:
+
+```bash
+docker compose down
+```
+
+Do not terminate processes until you have identified which service owns the port.
+
+### A backend is marked DOWN
+
+Check the backend containers:
+
+```bash
+docker compose ps
+```
+
+Inspect the relevant backend logs:
+
+```bash
+docker compose logs backend-9002
+```
+
+Replace `backend-9002` with the affected service. Allow the health-check mechanism time to register successful recovery after the backend is restored.
+
+### The dashboard cannot retrieve statistics
+
+Check that the load balancer is running and that the configured `LB_URL` points to the correct address for the current execution mode.
+
+For Docker Compose, the dashboard may need to communicate with the load balancer using its Compose service name rather than `localhost`, depending on the configured environment.
+
+### Tests fail because of missing dependencies
+
+Activate the project virtual environment and install the required packages. Check the relevant requirements file before installing dependencies.
+
+```bash
+source .venv/bin/activate
+```
+
+Then run the test suite again:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+### Docker services are not healthy
+
+Inspect the service status and logs:
+
+```bash
+docker compose ps
+docker compose logs
+```
+
+Resolve the reported issue before running load tests or collecting new packet captures.
+
+## Project Team and Academic Details
+
+**Project:** Vantora — Dynamic Load Balancer
+
+**Institution:** MIT World Peace University (MIT-WPU)
+
+**Course:** Computer Networks Laboratory (CSE20110)
+
+**Academic Year:** 2026–2027
+
+**Project Team:** 
+
+
+| Sr. No. | Team Member Name | PRN Number |
 |---:|---|---|
-| 1 | 1262241524 | Nayna Sharma |
-| 2 | 1262241534 | Harshad Pardhi |
-| 3 | 1262241729 | Aaryan Kumbhare |
-| 4 | 1262241775 | Anurag Harapanahalli |
-
+| 1 | Nayna Sharma | 1262241524 |
+| 2 | Harshad Pardhi | 1262241534 |
+| 3 | Aaryan Kumbhare | 1262241729 |
+| 4 | Anurag Harapanahalli | 1262241775 |
