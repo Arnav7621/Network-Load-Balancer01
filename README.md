@@ -371,6 +371,11 @@ Use environment variables to override defaults where supported. Refer to the rel
 
 ## Dashboard
 
+### Dashboard Overview
+
+The Vantora dashboard provides a real-time view of backend health, request distribution, load-balancing algorithms, and traffic statistics.
+
+![Vantora Load Balancer Dashboard](docs/screenshots/dashboard.png)
 The dashboard is available at:
 
 http://localhost:5050
